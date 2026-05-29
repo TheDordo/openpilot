@@ -1,3 +1,7 @@
+This is my personal branch based of of MVL's fork of sunnypilot for attempting to get my 2019 Acura RDX (39990-TJB-A030) Torque Modded. Currently up to date with MVL's sp-honda-202605 branch with additional bits for EPS flashing. 
+
+DO NOT TOUCH THESE IF YOU DO NOT KNOW WHAT THAT MEANS!
+
 ![](https://user-images.githubusercontent.com/47793918/233812617-beab2e71-57b9-479e-8bff-c3931347ca40.png)
 
 ## 🌞 What is sunnypilot?
