@@ -11,7 +11,8 @@ from openpilot.starpilot.models.status import ModelHealth, ModelStatus, ModelVar
 from openpilot.starpilot.ui.feature_settings_state import feature_row_top, FeatureInput
 from openpilot.starpilot.ui.models_compact import ModelsCompact, _ModelsPage, _display_text
 from openpilot.starpilot.ui.models_state import (model_page, model_action_allowed, model_catalog_rows, model_profile_choices, model_profile_request,
-                                                home_model_label)
+                                                home_model_label, jetlink_debug_lines)
+from openpilot.starpilot.models.jetlink_status import JetlinkStatus
 from openpilot.starpilot.ui.presentation import Profile
 from openpilot.starpilot.ui.settings_state import Destination
 from openpilot.starpilot.ui.shell import ShellMode, ShellView
@@ -195,6 +196,23 @@ class TestModelManager(unittest.TestCase):
       session.model_manager_snapshot.return_value = {**self.data, "isOnroad": True}
       callback()
       session.model_manager_action.assert_not_called()
+
+  def test_jetlink_debug_rows_follow_ui_debug_mode(self):
+    status = ModelStatus(BUNDLED_CURRENT, None, None, ModelHealth.UNAVAILABLE, False, None, None)
+    jetlink = {"mode": "usb", "state": "prepared", "runtimeState": "ready", "present": True, "prepared": True,
+               "enabled": True, "active": False, "transport": "USB", "supported": True, "chestnut": False}
+    manager = self.data | {"jetlink": jetlink}
+    without = model_page(status, manager, show_debug=False)
+    self.assertFalse(any(row.label.startswith("Jetlink") for row in without.rows))
+    with mock.patch("openpilot.starpilot.models.jetlink_status.read_status",
+                    return_value=JetlinkStatus("Computer", "connected", None, "device")):
+      with_debug = model_page(status, manager, show_debug=True)
+    labels = [row.label for row in with_debug.rows]
+    self.assertIn("Jetlink status", labels)
+    self.assertIn("Jetlink link", labels)
+    timing = next(row for row in with_debug.rows if row.label == "Jetlink timing")
+    self.assertEqual(timing.value, "host time n/a")
+    self.assertEqual(jetlink_debug_lines({"mode": "off"}), (("Jetlink", "off"),))
 
   def test_randomizer_disables_manual_selection_but_keeps_favorites_independent(self):
     randomized = {**self.data, "randomizer": True}

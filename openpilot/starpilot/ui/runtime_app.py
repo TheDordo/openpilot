@@ -900,7 +900,8 @@ class StarShellSession:
     try:
       if self.model_source is None:
         self.model_source = ModelStatusSource(self.adapter.ui_state.params)
-      return model_page(self.model_source.snapshot(), self.model_manager_snapshot())
+      show_debug = self.adapter.ui_state.params.get_bool("ShowDebugInfo")
+      return model_page(self.model_source.snapshot(), self.model_manager_snapshot(), show_debug=show_debug)
     except Exception:
       # Model status is optional diagnostics; UI remains usable without IPC.
       return model_page(project_status(None, None, None, None, time.monotonic_ns()))

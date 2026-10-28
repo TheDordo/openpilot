@@ -7,7 +7,57 @@ from openpilot.starpilot.models.status import ModelHealth, ModelStatus, ModelVar
 from openpilot.starpilot.ui.feature_settings_state import FeatureRow, FeatureSettingsState
 
 
-def model_page(status: ModelStatus, manager: dict | None = None) -> FeatureSettingsState:
+def jetlink_debug_lines(jetlink: dict | None) -> tuple[tuple[str, str], ...]:
+  if not isinstance(jetlink, dict):
+    return ()
+  mode = jetlink.get("mode", "off")
+  if mode == "off":
+    return (("Jetlink", "off"),)
+  flags = [label for key, label in (("present", "present"), ("prepared", "prepared"), ("enabled", "enabled"), ("active", "active"))
+           if jetlink.get(key)]
+  runtime = str(jetlink.get("runtimeState", "unavailable"))
+  if flags:
+    runtime = f"{runtime} · {' · '.join(flags)}"
+  rows: list[tuple[str, str]] = [
+    ("Jetlink status", f"{mode} · {jetlink.get('state', '?')}"),
+    ("Jetlink runtime", runtime),
+  ]
+  transport = str(jetlink.get("transport", "USB"))
+  try:
+    from openpilot.starpilot.models.jetlink_status import read_status
+    live = read_status()
+    port = live.port or "none"
+    device = live.device or "none"
+    latency = f"{live.latency_ms:.1f} ms host" if live.latency_ms else "host time n/a"
+    rows.append(("Jetlink link", f"{transport} · port {port} · {device} · {live.state}"))
+    rows.append(("Jetlink timing", latency))
+  except Exception:
+    rows.append(("Jetlink transport", transport))
+  if jetlink.get("reason"):
+    rows.append(("Jetlink reason", str(jetlink["reason"])))
+  if jetlink.get("progress"):
+    rows.append(("Jetlink progress", str(jetlink["progress"])))
+  sha = jetlink.get("activeArtifactSha256")
+  if isinstance(sha, str) and sha:
+    rows.append(("Jetlink artifact", sha[:16]))
+  checkpoint = jetlink.get("activeCheckpoint")
+  if checkpoint:
+    rows.append(("Jetlink checkpoint", str(checkpoint)))
+  model = jetlink.get("model")
+  if model and not jetlink.get("active"):
+    rows.append(("Jetlink model", str(model)))
+  if jetlink.get("chestnut"):
+    rows.append(("Jetlink chestnut", "fitted · link blocked"))
+  if jetlink.get("supported") is False:
+    rows.append(("Jetlink device", "unsupported on this comma"))
+  return tuple(rows)
+
+
+def jetlink_debug_rows(jetlink: dict | None) -> tuple[FeatureRow, ...]:
+  return tuple(FeatureRow("", title, value, reason="UI debug mode") for title, value in jetlink_debug_lines(jetlink))
+
+
+def model_page(status: ModelStatus, manager: dict | None = None, show_debug: bool = False) -> FeatureSettingsState:
   entries = model_entries()
   if status.health is ModelHealth.ACTIVE:
     health = "Active"
@@ -42,6 +92,8 @@ def model_page(status: ModelStatus, manager: dict | None = None) -> FeatureSetti
     rows += (FeatureRow("", "Fallback", "Bundled driving model", reason="Selected model load or run failed"),)
   if manager is not None:
     rows = model_manager_rows(manager) + rows
+    if show_debug:
+      rows = rows + jetlink_debug_rows(manager.get("jetlink"))
   return FeatureSettingsState(title="Driving Model", subtitle="Selections apply at next start; runtime shows the loaded model.",
                               rows=rows)
 

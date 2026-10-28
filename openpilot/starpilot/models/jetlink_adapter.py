@@ -106,13 +106,35 @@ def _adapter_class():
 
     def small_reset(self, small):
       # CatalogModelState's history zeroed in place: GPU queues, numpy inputs (prev_feat, packed inputs) and
-      # the desire edge. Never _reset_state(), which makes tensors the run JIT was not captured with
+      # the desire edge. Never _reset_state(), which makes tensors the run JIT was not captured with. The GPU
+      # queues are written from the CPU through their host mapping, not by a zeroing kernel: once a model has
+      # loaded, the runtime bridge's submission guard refuses every freshly compiled QCOM kernel in modeld
       from openpilot.starpilot.models.runner import CatalogModelState
       if not isinstance(small, CatalogModelState):
         return None
-      from jetlink.openpilot.warp import reset_queues
-      queues = [q for name, q in small.input_queues.items() if q.device != "NPY" and name not in FRAME_INPUTS]
-      return reset_queues(queues, small.npy.values(), small.prev_desire)
+      import numpy as np
+      from tinygrad.device import Device
+      buffers = [q.uop.base.buffer for name, q in small.input_queues.items() if q.device != "NPY" and name not in FRAME_INPUTS]
+      views = []
+      for buffer in buffers:
+        host = buffer._host_mv()
+        # a view's mapping is its base's whole allocation, which zeroing would reach past the queue
+        if host is None or buffer._base is not None or host.nbytes != buffer.nbytes:
+          raise RuntimeError(f"the small model's {buffer.device} history queue has no host mapping of its own")
+        views.append(np.frombuffer(host, dtype=np.uint8))
+      devices = {buffer.device for buffer in buffers}
+      arrays = tuple(small.npy.values())
+
+      def reset():
+        for device in devices:
+          Device[device].synchronize()
+        for view in views:
+          view.fill(0)
+        small.prev_desire.fill(0)
+        for array in arrays:
+          array.fill(0)
+
+      return reset
 
   return StarPilotAdapter
 

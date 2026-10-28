@@ -190,8 +190,12 @@ def test_the_small_models_history_clears_in_place(layout):
     small = CatalogModelState.__new__(CatalogModelState)
     small.input_queues, small.npy, small.prev_desire = queues, npy, np.ones(8, dtype=np.float32)
     buffers = {name: q.uop.base.buffer for name, q in queues.items()}
-    warp.init_device(logging.getLogger(__name__))  # as modeld: the reset's kernels compile with no compile pool
-    reset = adapter.adapter().small_reset(small)
+    warp.init_device(logging.getLogger(__name__))
+    # on a comma the runtime bridge refuses any kernel compiled after the model loads, so neither the capture
+    # nor the reset may run one
+    no_kernels = patch.object(Tensor, "realize", side_effect=AssertionError("the reset ran a kernel"))
+    with no_kernels:
+      reset = adapter.adapter().small_reset(small)
     history = [name for name, q in queues.items() if q.device != "NPY" and name not in adapter.FRAME_INPUTS]
     for _ in range(3):
       for name in history:
@@ -199,7 +203,8 @@ def test_the_small_models_history_clears_in_place(layout):
       for array in npy.values():
         array.fill(3)
       small.prev_desire.fill(1)
-      reset()
+      with no_kernels:
+        reset()
       assert {name: q.uop.base.buffer for name, q in queues.items()} == buffers
       for name in history:
         assert not queues[name].numpy().any(), name
