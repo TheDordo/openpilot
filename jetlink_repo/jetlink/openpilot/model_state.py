@@ -1,4 +1,4 @@
-"""
+﻿"""
 Copyright (c) 2026-, Zeph Leggett.
 
 This file is part of jetlink and is licensed under the MIT License.
@@ -157,9 +157,9 @@ class JetlinkModelState:
     # model manager key off this flag
     self.chestnut = True
 
-    # a warp.Warp, loaded and warmed ahead: its first call links the JIT, and
-    # this runs on modeld's frame thread. Frames go out of its output as they
-    # are, over either transport
+    # a warp.Warp or the adapter's model_warp, loaded and warmed ahead: its
+    # first call links the JIT, and this runs on modeld's frame thread. Frames
+    # go out of its output as they are, over either transport
     self.warp = warp
 
     self.input_shapes = spec.input_shapes
