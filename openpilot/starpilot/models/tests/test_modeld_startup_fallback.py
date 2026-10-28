@@ -39,7 +39,17 @@ def test_jetlink_gets_the_frames_delay_before_every_run():
   run = next(node.lineno for node in statements if isinstance(node, ast.Try) and
              any(isinstance(child, ast.Call) and ast.unparse(child.func) == "model.run" for child in ast.walk(node)))
   # Night Star port: the told delay is the Honda EPS calibration's schedule when it has one, else lagd's
-  assert line("lat_delay = lateral_delay + LAT_SMOOTH_SECONDS") < line("model.lat_delay = lat_delay") < run
+  assert (line("subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)") <
+          line("lat_delay = lateral_delay + LAT_SMOOTH_SECONDS + subaru_tau") <
+          line("model.lat_delay = lat_delay") < run)
+  assignments = {ast.unparse(node.targets[0]): node for node in statements if isinstance(node, ast.Assign)}
+  # Reuse the same joined runner across frames: each write must include the current delay and smoothing.
+  model = SimpleNamespace(lat_delay=-1.)
+  for delay, tau in ((.1, 0.), (.25, .4), (.05, 2.)):
+    env = {"lateral_delay": delay, "LAT_SMOOTH_SECONDS": .03, "subaru_tau": tau, "model": model}
+    code = ast.Module(body=[assignments["lat_delay"], assignments["model.lat_delay"]], type_ignores=[])
+    exec(compile(ast.fix_missing_locations(code), str(MODEL_SOURCE), "exec"), env)
+    assert model.lat_delay == pytest.approx(delay + .03 + tau)
 
 
 @pytest.mark.parametrize("runner_chestnut,stored_active", [(True, False), (True, True), (False, True), (False, False)])
@@ -103,7 +113,9 @@ def test_remote_inference_failure_does_not_change_chestnut_status():
 
 
 def execute(statements, env):
-  env.setdefault("os", SimpleNamespace(getenv=lambda key: None))
+  def exit_process(code):
+    raise SystemExit(code)
+  env.setdefault("os", SimpleNamespace(getenv=lambda key: None, _exit=exit_process))
   env.setdefault("recovery_small_only", False)
   from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
   env.setdefault("STARTUP_FALLBACK_EXIT", STARTUP_FALLBACK_EXIT)

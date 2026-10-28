@@ -7,6 +7,7 @@ from opendbc.car.honda.accord_mvl_stock import AccordMvlStock, qualified as mvl_
 from opendbc.car.honda.modified_eps import ModifiedEpsSteering, current_settings, get_eps_modified_steering_pressed, modified_eps  # noqa: F401
 from opendbc.car.honda.nidec_interceptor import NidecInterceptor, create_command, qualified as interceptor_qualified
 from opendbc.car.honda.bosch_longitudinal import BoschLongitudinal, qualified as bosch_long_qualified
+from opendbc.car.honda import pcm_acc
 from opendbc.car.honda.values import CAR, CruiseButtons, HondaFlags, CarControllerParams
 from opendbc.car.interfaces import CarControllerBase
 
@@ -108,6 +109,9 @@ class CarController(CarControllerBase):
     # read as safety limiting in controlsd and froze the lateral integrator. openpilot attaches modified_eps_settings.
     self.modified_eps_steering = ModifiedEpsSteering() if modified_eps(CP) else None
     self.modified_eps_settings = None
+    # Clarity with an interceptor: the PCM stays in ACC while openpilot is engaged (honda/pcm_acc.py)
+    self.keep_pcm_acc = pcm_acc.qualified(CP)
+    self.standstill_hold = pcm_acc.StandstillHold()
 
     self.braking = False
     self.brake_steady = 0.
@@ -130,15 +134,21 @@ class CarController(CarControllerBase):
     hud_control = CC.hudControl
     hud_v_cruise = hud_control.setSpeed / CS.v_cruise_factor if hud_control.speedVisible else 255
     pcm_cancel_cmd = CC.cruiseControl.cancel
+    if self.keep_pcm_acc:
+      # carstate hides the PCM's ACC from openpilot in this mode, so the cancel on disengage is sent from here
+      pcm_cancel_cmd = CS.pcm_acc_active and not CC.enabled
     if self.bosch_longitudinal is not None:
       self.bosch_longitudinal.observe_orientation(CC.orientationNED)
 
     if CC.longActive:
       accel = actuators.accel
       gas, brake = compute_gas_brake(actuators.accel, CS.out.vEgo, self.CP)
+      if self.keep_pcm_acc:
+        brake = self.standstill_hold.update(brake, CS.out.standstill, actuators.longControlState == LongCtrlState.stopping)
     else:
       accel = 0.0
       gas, brake = 0.0, 0.0
+      self.standstill_hold.latched = False
 
     # *** rate limit steer ***
     if _projection is not None:
@@ -200,6 +210,8 @@ class CarController(CarControllerBase):
     if self.nidec_interceptor is not None or not CC.longActive:
       pcm_speed = 0.0
       pcm_accel = int(0.0)
+      if self.keep_pcm_acc and CC.longActive:
+        pcm_accel = pcm_acc.hud_gas(CS.out.vEgo)
     elif self.CP.flags & HondaFlags.NIDEC_ALT_PCM_ACCEL:
       pcm_speed_V = [0.0,
                      np.clip(CS.out.vEgo - 3.0, 0.0, 100.0),

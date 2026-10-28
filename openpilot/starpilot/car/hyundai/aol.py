@@ -1,4 +1,8 @@
 from dataclasses import replace
+from functools import lru_cache
+
+from opendbc.car.hyundai.ev9_long_aol import qualified as qualified_ev9_long_aol, WORDS as EV9_LONG_AOL_WORDS
+from opendbc.car.hyundai.pe_long_aol import qualified as qualified_pe_long_aol, WORDS as PE_LONG_AOL_WORDS
 
 from opendbc.car.hyundai.blended_stock_aol import (
   qualified as qualified_blended_stock, qualified_alpha as qualified_blended_alpha,
@@ -94,7 +98,14 @@ def ioniq6_settings_capable(CP) -> bool:
   return _stock_ioniq6(CP) or (IONIQ6_LONG_PREARM_ENABLED and ioniq6_long_eligible(CP))
 
 
+def qualified_ccnc_long_aol(CP, *, marked_only=False):
+  return qualified_ev9_long_aol(CP, marked_only=marked_only) or qualified_pe_long_aol(CP, marked_only=marked_only)
+
+
 def _policy_for(CP) -> AolVehiclePolicy:
+  if qualified_ccnc_long_aol(CP):
+    return AolVehiclePolicy(cruise_main_required=False, intent_supported=True, settings_supported=True, runtime_supported=True,
+                            normal_runtime_supported=True, explicit_latch=True, alternative_experience_addition=32)
   if qualified_blended_alpha(CP):
     return AolVehiclePolicy(intent_supported=True, settings_supported=True, runtime_supported=True,
                             normal_runtime_supported=True, ordinary_axis_ack_required=qualified_blended_alpha(CP, marked_only=True),
@@ -125,6 +136,7 @@ def _policy_for(CP) -> AolVehiclePolicy:
     )
   if qualified_classic_scc(CP):
     return AolVehiclePolicy(
+      cruise_main_required=False,
       intent_supported=True,
       settings_supported=True,
       runtime_supported=True,
@@ -148,6 +160,7 @@ def _policy_for(CP) -> AolVehiclePolicy:
     )
   if qualified_non_scc(CP):
     return AolVehiclePolicy(
+      cruise_main_required=False,
       intent_supported=True,
       settings_supported=True,
       runtime_supported=True,
@@ -189,7 +202,8 @@ def policy_for(CP) -> AolVehiclePolicy:
       CP.openpilotLongitudinalControl and policy.runtime_supported):
     policy = replace(policy, paddle_pause=True)
   marked = (
-    qualified_blended_alpha(CP, marked_only=True) or qualified_blended_stock(CP, marked_only=True)
+    qualified_ccnc_long_aol(CP, marked_only=True)
+    or qualified_blended_alpha(CP, marked_only=True) or qualified_blended_stock(CP, marked_only=True)
     or qualified_angle_aol(CP, marked_only=True) or qualified_classic_long(CP, marked_only=True)
     or qualified_classic_scc(CP, marked_only=True) or qualified_canfd_long(CP, marked_only=True)
     or qualified_canfd_stock(CP, marked_only=True) or qualified_ioniq6(CP)
@@ -211,7 +225,8 @@ def native_profile_supported(model: int, param: int) -> bool:
     or classic_native_profile_supported(model, param)
     or (
       model == int(car.CarParams.SafetyModel.hyundaiCanfd)
-      and param in IONIQ6_AOL_SAFETY_PARAMS | CANFD_LONG_AOL_WORDS | ANGLE_AOL_WORDS | STOCK_AOL_WORDS | set(STOCK_SAFETY_PARAMS.values())
+      and param in (IONIQ6_AOL_SAFETY_PARAMS | CANFD_LONG_AOL_WORDS | ANGLE_AOL_WORDS | EV9_LONG_AOL_WORDS |
+                    PE_LONG_AOL_WORDS | STOCK_AOL_WORDS | set(STOCK_SAFETY_PARAMS.values()))
     )
     or (model == int(car.CarParams.SafetyModel.hyundai) and param in AOL_WORDS)
   )
@@ -222,6 +237,8 @@ def native_accepts_cp(CP, model: int, param: int) -> bool:
   # Revalidate the complete contract on every call, without caching live authority.
   if CP.carFingerprint == HyundaiCAR.HYUNDAI_IONIQ_6:
     return qualified_ioniq6(CP)
+  if qualified_ccnc_long_aol(CP, marked_only=True):
+    return model == int(car.CarParams.SafetyModel.hyundaiCanfd) and param == CP.safetyConfigs[0].safetyParam
   if qualified_blended_alpha(CP, marked_only=True) or qualified_blended_stock(CP, marked_only=True):
     return model == int(car.CarParams.SafetyModel.hyundai) and param == CP.safetyConfigs[0].safetyParam
   if qualified_angle_aol(CP, marked_only=True):
@@ -247,7 +264,7 @@ def native_latch_rejected(CP, native) -> bool:
   return (
     native.requestedLateral and not native.lateralAllowed and
     (
-      qualified_angle_aol(CP, marked_only=True)
+      qualified_angle_aol(CP, marked_only=True) or qualified_ccnc_long_aol(CP, marked_only=True)
       or qualified_blended_stock(CP, marked_only=True)
       or qualified_blended_alpha(CP, marked_only=True)
       or qualified_classic_long(CP, marked_only=True)
@@ -298,14 +315,52 @@ def allow_lateral_onset(CP, *, requested, normal_enabled, steering_pressed, prev
 
 
 def retain_on_native_denial(CP, native, state):
-  return bool(qualified_angle_aol(CP, marked_only=True) and native.requestedLateral and not native.lateralAllowed and temporary_restriction(CP, state))
+  return bool((qualified_angle_aol(CP, marked_only=True) or qualified_ccnc_long_aol(CP, marked_only=True)) and
+              native.requestedLateral and not native.lateralAllowed and temporary_restriction(CP, state))
+
+
+def early_native_long_withdrawal_supported(CP) -> bool:
+  """Exact LONG profiles whose native policy grants lateral independently."""
+  return bool(CP.openpilotLongitudinalControl and
+              (qualified_ioniq6(CP) or qualified_canfd_long(CP, marked_only=True)))
+
+
+def _source_deadline_supported_uncached(CP) -> bool:
+  """Admit only an already marked HKG axis owner to original-proof waits."""
+  from openpilot.starpilot.aol.vehicle import policy_for as vehicle_policy_for
+
+  config = aol_safety_config(CP)
+  policy = vehicle_policy_for(CP)
+  return bool(policy.runtime_supported and policy.full_axis_runtime_required and config is not None and
+              native_accepts_cp(CP, int(config.safetyModel.raw), int(config.safetyParam)))
+
+
+@lru_cache(maxsize=64)
+def _source_deadline_for_bytes(key: bytes) -> bool:
+  with car.CarParams.from_bytes(key) as CP:
+    return _source_deadline_supported_uncached(CP)
+
+
+def source_deadline_supported(CP) -> bool:
+  """Reuse only exact static eligibility; live source/native leases stay current."""
+  from openpilot.starpilot.aol.vehicle import _car_params_bytes
+
+  if CP.brand != 'hyundai':
+    return False
+  key = _car_params_bytes(CP)
+  if key is not None:
+    try:
+      return _source_deadline_for_bytes(key)
+    except Exception:
+      pass  # Snapshot/cache failures retain the complete original evaluation.
+  return _source_deadline_supported_uncached(CP)
 
 
 def independent_cruise_buttons_supported(CP, *, marked_only=False) -> bool:
   # Dedicated EV6 LONG raw-button/optional-release behavior stays unchanged.
   if CP.carFingerprint == HyundaiCAR.KIA_EV6 and CP.openpilotLongitudinalControl:
     return False
-  return bool(qualified_sonata_independent(CP) or
+  return bool(qualified_ccnc_long_aol(CP, marked_only=marked_only) or qualified_sonata_independent(CP) or
               qualified_angle_aol(CP, marked_only=marked_only) or
               qualified_canfd_stock(CP, marked_only=marked_only) or
               qualified_canfd_long(CP, marked_only=marked_only) or
@@ -346,13 +401,13 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
   This returns no axis grant and changes no feedback/native/source deadline.
   The next actual LAT-only publication must establish its own normal baseline.
   """
-  from opendbc.car.hyundai.canfd_stock_aol import LONG_EV_CARS
+  from opendbc.car.hyundai.canfd_stock_aol import INDEPENDENT_LONG_BUTTON_CARS
   from openpilot.cereal import log
   from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, SAFETY_MAX_AGE_NS
   from openpilot.starpilot.aol.transport_pause import cp_identity, independent_lateral_health
   try:
-    if (not (qualified_sonata_independent(CP) or
-             CP.carFingerprint in LONG_EV_CARS and qualified_canfd_long(CP, marked_only=True)) or
+    if (not (qualified_sonata_independent(CP) or qualified_ccnc_long_aol(CP, marked_only=True) or
+             CP.carFingerprint in INDEPENDENT_LONG_BUTTON_CARS and qualified_canfd_long(CP, marked_only=True)) or
         owner is None or not owner.explicit_latch or not owner.independent_cruise_buttons or
         not owner.allowed_latch or owner.pause_lateral or owner.pause_longitudinal or owner._fault_inhibit):
       return False
@@ -407,12 +462,67 @@ def retained_shared_long_cancel_intent(CP, CS, sm, feedback, owner, *, cancel_so
             event.userDisable and event.name != log.OnroadEvent.EventName.buttonCancel for event in sm['onroadEvents'])):
       return False
     native = independent_lateral_health(sm, CP, CS, feedback.session, now_ns)
+    owner_index = 0 if len(CP.safetyConfigs) == 1 else config_index(CP)
     if (native is None or not native.pandaInventory or not native.requestedLateral or not native.lateralAllowed or
         not native.requestedLongitudinal or native.longitudinalAllowed or
         native.observedMonoTime < feedback.healthy_native_ns or
         (native.pandaSerial, tuple(slot.hardwareSerial for slot in native.pandaInventory)) != feedback.healthy_inventory or
-        len(native.pandaInventory) != 1 or native.pandaInventory[0].controlsAllowed):
+        owner_index is None or len(native.pandaInventory) != len(CP.safetyConfigs) or
+        native.pandaInventory[owner_index].controlsAllowed):
       return False
     return True
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return False
+
+
+def expected_stopped_lateral_denial(CP, CS, native, *, sm, axis_session_id, now_ns):
+  """A healthy angle stop retains intent while native steering stays withdrawn."""
+  import math
+  from openpilot.starpilot.aol.transport_pause import _configured_transport_native
+
+  try:
+    return bool(qualified_angle_aol(CP, marked_only=True) and
+      CS.canValid and not CS.canTimeout and not CS.steerFaultTemporary and not CS.steerFaultPermanent and
+      not CS.accFaulted and CS.gearShifter == car.CarState.GearShifter.drive and
+      math.isfinite(CS.vEgoRaw) and 0.0 <= CS.vEgoRaw <= 0.3 and
+      native is not None and native.requestedLateral and not native.lateralAllowed and
+      native.pandaInventory and
+      _configured_transport_native(sm, CP, axis_session_id, now_ns, native,
+                                   allow_restricted_lateral=True) == native)
+  except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
+    return False
+
+
+def pending_stock_angle_arm(CP, CS, sm, owner, *, now_ns, producer, acknowledged_arm_ns=0):
+  """Keep a fresh physical arm pending its original native acknowledgement."""
+  from opendbc.car.hyundai.canfd_angle_aol import ANGLE_ACK_TIMEOUT_NS
+  from openpilot.starpilot.aol.runtime import AXIS_MAX_AGE_NS, current_axis
+  from openpilot.starpilot.aol.transport_pause import _configured_transport_native
+
+  try:
+    arm = owner.physical_arm_ns
+    if (not qualified_angle_aol(CP, marked_only=True) or CP.openpilotLongitudinalControl or not CP.pcmCruise or
+        not owner.allowed_latch or not owner.settings.enabled or owner.pause_lateral or
+        arm != owner._last_latch_edge_ns or arm == acknowledged_arm_ns or not 0 < arm <= now_ns < arm + ANGLE_ACK_TIMEOUT_NS or
+        not CS.canValid or CS.canTimeout or CS.steerFaultTemporary or CS.steerFaultPermanent or CS.accFaulted or
+        CS.gearShifter != car.CarState.GearShifter.drive or temporary_restriction(CP, CS)):
+      return False
+    axis = current_axis(sm, now_ns=now_ns)
+    if (axis is None or str(axis.faultReason) != 'none' or axis.faultSessionId != axis.sessionId or
+        not axis.desiredLateral or axis.lateralActive or axis.desiredLongitudinal or axis.longitudinalActive or
+        axis.observedMonoTime != sm.logMonoTime['aolAxisState'] or
+        not 0 < axis.sourceCarStateMonoTime <= axis.observedMonoTime <= now_ns or
+        now_ns - axis.sourceCarStateMonoTime > AXIS_MAX_AGE_NS or
+        axis.validUntilMonoTime - axis.observedMonoTime > AXIS_MAX_AGE_NS or
+        axis.intentProducerSessionId != producer or not producer):
+      return False
+    event_ns = int(sm.logMonoTime['onroadEvents'])
+    if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
+        not 0 < event_ns <= now_ns or now_ns - event_ns > 1_500_000_000 or
+        any(event.immediateDisable or event.softDisable or event.userDisable for event in sm['onroadEvents'])):
+      return False
+    native = _configured_transport_native(sm, CP, axis.sessionId, now_ns, allow_restricted_lateral=True)
+    return bool(native is not None and native.pandaInventory and not native.lateralAllowed and
+                not native.requestedLongitudinal and not native.longitudinalAllowed)
   except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
     return False

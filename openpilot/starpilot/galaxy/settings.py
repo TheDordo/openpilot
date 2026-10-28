@@ -124,7 +124,7 @@ def _onroad_preference(page: str, key: str) -> bool:
   # multi-key reset/repair operations need the offroad transaction boundary;
   # their owners independently recheck that requirement at commit time.
   return bool(page != "developer" and key and key != SETUP_ACTION and key not in (
-    "reset_profiles", "curve_reset", "slc_adopt", "slc_reset",
+    "AlphaLongitudinalEnabled", "reset_profiles", "curve_reset", "slc_adopt", "slc_reset",
     "conditional:reset", "conditional:manual_reset",
   ) and not is_long_confirm_action(key) and not key.startswith("torque_repair:"))
 
@@ -380,6 +380,8 @@ def _question(row: FeatureRow, request: FeatureSettingsRequest) -> str:
     return f"Set lane centering strength to {level:.2f}? 5 is normal."
   if key == "UseStarPilotLongitudinalPlanner":
     return f"Select {request.value} for {row.label.lower()}? The selected planner starts with the next driving process."
+  if key in ("BoschAStockBrakeFeel", "BoschAHumanFollowing"):
+    return f"Turn {request.value} {row.label}? This applies on the next drive, with either planner."
   if key in ("CustomCruise", "CustomCruiseLong"):
     if row.capability and row.capability[0] == "toyota":
       return f"Save {row.label.lower()} as {request.value}? Toyota cruise preferences refresh while this compatible drive is active."

@@ -292,14 +292,16 @@ class SelfdriveD:
     source_ns = self.aol_car_state_log_ns
     source_current = bool(getattr(self, 'conditional_car_state_valid', False) and CS.canValid and not CS.canTimeout and
                           0 < source_ns <= now_ns and now_ns - source_ns <= INTENT_MAX_AGE_NS)
-    pair = companion.current(self.sm, source_ns=source_ns, now_ns=now_ns, drain=False) if drained else None
+    from openpilot.starpilot.car.gm.aol import steering_raw_projection_owner, steering_source_gap_intent_only
+    pair = companion.current(self.sm, source_ns=source_ns, now_ns=now_ns, drain=False,
+                             allow_raw_projection=steering_raw_projection_owner(self.CP)) if drained else None
     if not source_current:
       pair = None
     previous_axes = self.aol_axis_decision
     expected_active = self.active or previous_axes.lateral_active or previous_axes.longitudinal_active
     if pair is not None:
       self.steering_authority_unavailable = pair
-    elif expected_active:
+    elif expected_active and not (drained and steering_source_gap_intent_only(self, CS, companion, now_ns)):
       self.steering_authority_unavailable = True
     if getattr(self, 'steering_authority_unavailable', False):
       self.events.add(EventName.controlsMismatch)
@@ -513,9 +515,10 @@ class SelfdriveD:
         self.events.add(EventName.radarFault)
     hardware_events_added = len(self.events) - num_events
 
+    from openpilot.starpilot.car.hyundai.aol import source_deadline_supported
     input_proof = getattr(self, 'aol_step_input_proof', None)
     reconcile_input = bool(input_proof is not None and not REPLAY and self.aol_replay and self.axis_transport_required and
-                           self.CP.openpilotLongitudinalControl and qualified_ioniq6(self.CP) and
+                           source_deadline_supported(self.CP) and
                            input_proof[0] == self.aol_session_id and
                            (input_proof[8] or input_proof[9]))
     self.aol_event_input_reconcile = reconcile_input
@@ -815,6 +818,10 @@ class SelfdriveD:
 
     return CS
 
+  def source_deadline_deferral_supported(self):
+    from openpilot.starpilot.car.hyundai.aol import source_deadline_supported
+    return qualified_ioniq6(self.CP) or qualified_gm(self.CP) or source_deadline_supported(self.CP)
+
   def held_axis_override_wait(self, CS, proof, now_ns, *, fresh_successor=False):
     """Recognize an already applied override; never admit a new physical edge."""
     if (proof is None or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP)) or not self.sm.seen['carControl'] or
@@ -855,8 +862,16 @@ class SelfdriveD:
     intent = getattr(self, 'aol_last_intent', None)
     previous_native = getattr(self, 'aol_published_input_native', None)
     held_brake, held_gas = self.held_axis_override_wait(CS, proof, now_ns) if final_held_override else (False, False)
-    user_disable = (any(event.userDisable and event.name != EventName.pedalPressed for event in self.events.to_msg())
-                    if held_brake else self.events.contains(ET.USER_DISABLE))
+    from opendbc.car.hyundai.canfd_stock_aol import qualified as qualified_stock_hkg
+    from opendbc.car.hyundai.canfd_angle_aol import qualified as qualified_angle_aol
+    stock_cruise_off = bool(proof is not None and proof[8] and not proof[9] and
+      not self.enabled and not self.active and not CS.cruiseState.enabled and
+      (qualified_stock_hkg(self.CP, marked_only=True) or
+       qualified_angle_aol(self.CP, marked_only=True) and self.CP.pcmCruise and not self.CP.openpilotLongitudinalControl) and
+      EventName.pcmDisable in self.events_prev and self.events.names == self.events_prev)
+    user_disable = any(event.userDisable and
+      not (held_brake and event.name == EventName.pedalPressed) and
+      not (stock_cruise_off and event.name == EventName.pcmDisable) for event in self.events.to_msg())
     if (proof is None or companion is None or intent is None or previous_native is None or
         self.aol_authority_lost or
         user_disable or any(self.events.contains(kind) for kind in (ET.SOFT_DISABLE, ET.IMMEDIATE_DISABLE)) or
@@ -977,14 +992,24 @@ class SelfdriveD:
 
   def defer_expired_axis_publication(self, CS, initial_state, *, now_ns=None):
     """Keep an existing unexpired proof for one normal tick; issue no new lease."""
-    if REPLAY or not self.aol_replay or not self.axis_transport_required or not (qualified_ioniq6(self.CP) or qualified_gm(self.CP)):
+    if REPLAY or not self.aol_replay or not self.axis_transport_required or not self.source_deadline_deferral_supported():
       return False
     proof = getattr(self, 'aol_step_input_proof', None)
     if now_ns is None:
       now_ns = time.monotonic_ns()
     source = self.aol_car_state_log_ns
+    source_valid = self.conditional_car_state_valid
+    from openpilot.starpilot.car.hyundai.aol import source_deadline_supported
+    if (source_deadline_supported(self.CP) and source == 0 and not source_valid and
+        getattr(self, 'aol_expired_healthy_source', False) and
+        not getattr(self, 'car_state_samples', ()) and not getattr(self, 'car_state_queue_invalid', False) and
+        getattr(self, 'car_state_retained_valid', False)):
+      # A socket timeout cleared the selected source. Validate only the old
+      # publication's receipt; keep the source invalid and its clocks unchanged.
+      source = getattr(self, 'car_state_retained_source_ns', 0)
+      source_valid = True
     if (getattr(self, 'aol_step_deferral_checked', False) or proof is None or proof != getattr(self, 'aol_published_input_proof', None) or
-        not self.conditional_car_state_valid or not 0 < source <= now_ns or
+        not source_valid or not 0 < source <= now_ns or
         now_ns - source <= INTENT_MAX_AGE_NS or source != proof[1] or
         now_ns >= proof[3] or self.aol_authority_lost or
         getattr(self, 'aol_fault_reason', 'none') != 'none' or
@@ -1052,6 +1077,12 @@ class SelfdriveD:
       lag.add(EventName.selfdrivedLagging)
       # Steering is already withdrawn, irrespective of any old ordinary timer.
       alerts.extend(lag.create_alerts([ET.SOFT_DISABLE], [self.CP, CS, self.sm, self.is_metric, 0, pers]))
+    if (getattr(self, 'aol_soft_takeover_alert', False) and
+        not getattr(self, 'aol_lag_takeover_alert', False) and not self.events.contains(ET.IMMEDIATE_DISABLE)):
+      # AOL already withdrew steering while ordinary cruise was disabled.
+      # Select the existing fault's takeover warning without starting LONG or
+      # changing its event classification, threshold, or output decision.
+      alerts.extend(self.events.create_alerts([ET.SOFT_DISABLE], [self.CP, CS, self.sm, self.is_metric, 0, pers]))
     alerts.extend(alert for alert in getattr(self, 'tesla_stock_alerts', [])
                   if alert.event_type in self.state_machine.current_alert_types)
     now_ns = time.monotonic_ns()
@@ -1135,13 +1166,21 @@ class SelfdriveD:
       alerts.append(notification)
     if not recovery.monitor.visible(now_ns):
       clear_event_types.add(RADAR_RECOVERY_EVENT)
-    if getattr(self, 'aol_fault_reason', 'none') == 'availabilityPause':
+    # A cold/unarmed fault classification is not a pause of expected steering.
+    # Qualified availability retention already carries both fields even while
+    # ordinary cruise is disabled; this only selects its presentation.
+    availability_warning = bool(getattr(self, 'aol_fault_reason', 'none') == 'availabilityPause' and
+      self.aol_axis_decision.desired_lateral and self.aol_axis_decision.native_acknowledged)
+    if availability_warning:
       warning = Alert("Steering Paused", "Communication Issue", log.SelfdriveState.AlertStatus.normal,
         log.SelfdriveState.AlertSize.small, AlertPriority.LOW, car.CarControl.HUDControl.VisualAlert.none,
         (log.SelfdriveState.AudibleAlert.prompt if
          now_ns <= getattr(self, 'aol_availability_chime_until_ns', 0) else log.SelfdriveState.AudibleAlert.none), 0.)
       warning.alert_type, warning.event_type = 'aolAvailability/warning', ET.WARNING
       alerts.append(warning)
+    else:
+      # Retire only this presentation; retain every original safety alert.
+      self.AM.alerts.pop('aolAvailability/warning', None)
     if getattr(self, 'jetlink_link_lost', False):
       alerts.append(jetlink_lost_alert())
     self.AM.add_many(self.sm.frame, alerts)
@@ -1466,7 +1505,7 @@ class SelfdriveD:
         final_ns = time.monotonic_ns()
         if ((axis.lateralActive or axis.longitudinalActive) and
             (not 0 < self.aol_car_state_log_ns <= final_ns or final_ns - self.aol_car_state_log_ns > INTENT_MAX_AGE_NS) and
-            (qualified_ioniq6(self.CP) or qualified_gm(self.CP))):
+            self.source_deadline_deferral_supported()):
           if (source_context is not None and source_context[1] and
               self.defer_expired_axis_publication(CS, source_context[0])):
             # Serialization crossed the same source boundary. Retain only the
@@ -1624,7 +1663,9 @@ class SelfdriveD:
     from openpilot.starpilot.car.gm.aol import physical_cancel_lateral_allowed, stock_ascm_independent_lateral, cc_independent_lateral_below_engage
     from openpilot.starpilot.car.hyundai.aol import physical_cancel_lateral_allowed as hkg_cancel_lateral_allowed
     from openpilot.starpilot.car.mazda.aol import physical_cancel_lateral_allowed as mazda_cancel_lateral_allowed
+    from openpilot.starpilot.car.subaru.aol import sng_standstill_lateral_inhibit
     from openpilot.starpilot.aol.dm import lateral_event_context
+    from openpilot.starpilot.car.toyota.legacy_lateral import below_engage_lateral_allowed as toyota_below_engage_lateral_allowed
     retained_dm_lateral, lateral_events = lateral_event_context(self, CS, intent, native, now_ns, ordinary_lag)
     reverse_pause = known_reverse_pause(CS, getattr(self, 'car_state_samples', ()))
     if reverse_pause:
@@ -1653,7 +1694,10 @@ class SelfdriveD:
                                                         stock_ascm_independent_lateral(self.CP) or
                                                         cc_independent_lateral_below_engage(self.CP, intent,
                                                           enabled=self.enabled, active=self.active)) and
-                                                       not self.CP.flags & GMFlags.PEDAL_LONG)),
+                                                       not self.CP.flags & GMFlags.PEDAL_LONG) or
+                             toyota_below_engage_lateral_allowed(self.CP, CS, intent, native,
+                               source_ns=getattr(self, 'aol_car_state_log_ns', 0), now_ns=now_ns,
+                               axis_session_id=getattr(self, 'aol_session_id', ''))),
       immediate_disable=self.events.contains(ET.IMMEDIATE_DISABLE),
       dm_lockout=bool(not self.sm.all_checks(['driverMonitoringState']) or
                       not retained_dm_lateral and (self.sm['driverMonitoringState'].lockout or
@@ -1661,7 +1705,7 @@ class SelfdriveD:
                         self.sm['driverMonitoringState'].alertLevel == AlertLevel.three)),
       pause_brake_mps=self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0,
       gear_pause=reverse_pause,
-      lateral_inhibit=self.aol_dm_lateral_inhibit or any(
+      lateral_inhibit=self.aol_dm_lateral_inhibit or sng_standstill_lateral_inhibit(self.CP, CS) or any(
         sample.steerFaultTemporary or sample.brakePressed and not sample.standstill and
         sample.vEgo < (self.aol_settings.pause_brake_mps if self.aol_settings is not None else 0.0)
         for sample, _ in getattr(self, 'car_state_samples', ())))
@@ -1735,6 +1779,7 @@ class SelfdriveD:
       return False
     from openpilot.starpilot.car.gm.aol import native_accepts_cp as gm_native_accepts_cp
     from openpilot.starpilot.car.toyota.aol import qualified as toyota_aol_qualified
+    from openpilot.starpilot.car.hyundai.aol import early_native_long_withdrawal_supported
     # Pandad reads health before its final native permission read. A GM driver
     # withdrawal between those reads legitimately leaves the earlier health
     # controlsAllowed true. For an admitted OP-long GM profile, the current
@@ -1743,8 +1788,12 @@ class SelfdriveD:
     # Toyota's native LONG mask also checks gas, brake and belt independently
     # of controls_allowed. Health and that mask may precede the parsed pedal
     # edge: honor LONG withdrawal while the existing native LAT grant stands.
-    # The exact Toyota policy and all proof/health checks above remain required.
+    # Ioniq6 also checks the physical brake before its separately published host sample.
+    # Retain only its already granted LAT; all proof, health and LONG withdrawal gates remain.
+    # The exact vehicle policies and all proof/health checks above remain required.
+    from openpilot.starpilot.car.ford.aol import early_native_long_withdrawal_supported as ford_early_long
     return bool(gm_native_accepts_cp(self.CP, native.safetyModel, native.safetyParam) or
+                early_native_long_withdrawal_supported(self.CP) or ford_early_long(self.CP) or
                 toyota_aol_qualified(self.CP, marked_only=True) or
                 not native.pandaInventory[owners[0]].controlsAllowed and
                 not self.sm['pandaStates'][owners[0]].controlsAllowed)
@@ -1784,6 +1833,7 @@ class SelfdriveD:
 
   def step(self):
     self.aol_lag_takeover_alert = False
+    self.aol_soft_takeover_alert = False
     initial_state = (self.state_machine.state, self.state_machine.soft_disable_timer, self.enabled, self.active)
     previous_deferred = getattr(self, 'aol_axis_publication_deferred', False)
     self.aol_axis_publication_deferred = False
@@ -1875,9 +1925,14 @@ class SelfdriveD:
       ordinary_long_withdrawal = bool(native is not None and not native.longitudinalAllowed and
         self.ordinary_native_long_withdrawal(
           CS, native, previous, requested, intent, source_current=source_current, now_ns=now_ns))
+      from openpilot.starpilot.car.hyundai.aol import expected_stopped_lateral_denial
+      stopped_lateral_withdrawal = bool(source_current and requested.desired_lateral and
+        expected_stopped_lateral_denial(self.CP, CS, native, sm=self.sm,
+          axis_session_id=self.aol_session_id, now_ns=now_ns))
       lost_permission = bool(lost_honda_lateral_grant or native is not None and not driver_override and (
         previous.lateral_active and requested.desired_lateral and native.requestedLateral and
-        not native.lateralAllowed and not CS.steeringPressed and not self.events.contains(ET.OVERRIDE_LATERAL) or
+        not native.lateralAllowed and not stopped_lateral_withdrawal and
+        not CS.steeringPressed and not self.events.contains(ET.OVERRIDE_LATERAL) or
         previous.longitudinal_active and requested.desired_longitudinal and native.requestedLongitudinal and
         not native.longitudinalAllowed and not ordinary_long_withdrawal and
         not self.events.contains(ET.OVERRIDE_LONGITUDINAL)))
@@ -1968,9 +2023,8 @@ class SelfdriveD:
       cold_park_wait = self.cold_gm_park_readiness(CS, intent, now_ns)
       self.aol_fault_reason = ('none' if cold_park_wait else
                                'availabilityPause' if ordinary_availability or cold_main_wait else
-                               'critical' if self.aol_authority_lost or self.events.contains(ET.IMMEDIATE_DISABLE) or
-                               aol_hard_soft_fault and not availability else
-                               'availabilityPause' if availability else 'transportPause' if pause else 'none')
+                               'critical' if self.aol_authority_lost or self.events.contains(ET.IMMEDIATE_DISABLE) else
+                               'availabilityPause' if availability or aol_hard_soft_fault else 'transportPause' if pause else 'none')
       if self.aol_authority_lost or pause:
         self.events.add(EventName.controlsMismatch)
         lost_active_aol |= pause
@@ -2039,6 +2093,12 @@ class SelfdriveD:
       # Removing only lag proves the cause of this acknowledged steering loss;
       # this notification-only result never replaces the withdrawn axis decision.
       self.aol_lag_takeover_alert = True
+    if (self.aol_replay and source_current and not was_enabled and not self.enabled and
+        previous.lateral_active and previous.native_acknowledged and not self.aol_axis_decision.lateral_active and
+        self.aol_fault_reason in ('critical', 'availabilityPause') and not self.aol_authority_lost and
+        intent is not None and intent.allowedLatch and self.events.contains(ET.SOFT_DISABLE) and
+        not self.events.contains(ET.IMMEDIATE_DISABLE)):
+      self.aol_soft_takeover_alert = True
     if (self.aol_replay and intent is not None and intent.lateralArmed and
         CS.steerFaultTemporary and not CS.steerFaultPermanent):
       # An armed AOL session still needs the ordinary temporary-steering warning
@@ -2105,4 +2165,3 @@ def main():
 
 if __name__ == "__main__":
   main()
-

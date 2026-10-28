@@ -776,19 +776,6 @@ struct StarPilotLateralState @0xc2243c65e0340384 {
   learningEvidence @9 :LearningControlEvidence;
   learningApplication @10 :LearningApplication;
 
-  # Honda modified-EPS firmware controller (selfdrive/controls/lib/latcontrol_honda_eps.py). The feedforward inverts the
-  # EPS firmware law; see selfdrive/controls/lib/honda_eps_firmware_ff.py. On vfn these were @8-@16; 7.0 uses
-  # @8-@10, so they moved up. Tools read them by name.
-  epsFfActive @11 :Bool;
-  epsFfFeedforward @12 :Float32;   # lateral output ([-1, 1]) of the feedforward at full weight
-  epsFfR5 @13 :Float32;            # EPS firmware target counts it asks for
-  epsFfLoad @14 :Float32;          # firmware output counts the column load model says the motion needs
-  epsFfDesiredRate @15 :Float32;   # deg/s, filtered desired steering-wheel rate it used
-  epsFfWeight @16 :Float32;        # 0..1 fade-in; the command carries epsFfWeight * epsFfFeedforward
-  epsCalibration @17 :Text;        # the EPS image calibration it steers with (EpsFirmwareCalibration.name)
-  epsCommandDelay @18 :Float32;    # s, command delay applied this frame (the calibration's, faded with speed)
-  epsModelDelay @19 :Float32;      # s, lateral delay controlsd handed over (the delay told to the model + smoothing)
-
   struct LaneCentering {
     version @0 :UInt16;
     modelMonoTime @1 :UInt64;
@@ -928,7 +915,6 @@ struct AolAxisState @0xfc6241ed8877b611 {
     direction @9 :Direction;
     autoConfigured @10 :Bool;
     engaged @11 :Bool;
-    turnDirection @12 :Direction;  # the turn desire modeld gave this model frame (navigation or Force turn desires)
 
     enum Phase {
       manualRequired @0;

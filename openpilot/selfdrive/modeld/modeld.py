@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 import base64
 import ctypes
 import gc
@@ -15,6 +16,8 @@ from tinygrad.engine.realize import lower_and_compile
 from tinygrad.tensor import Tensor
 from tinygrad.helpers import all_int, round_up
 from tinygrad.uop.ops import UOp
+if TYPE_CHECKING:
+  from openpilot.starpilot.models.runtime_bridge.legacy_types import LegacyBuffer, LegacyUOpFactory
 import math
 import pickle
 import threading
@@ -160,8 +163,8 @@ class FrameMeta:
 def input_view(buffer: Buffer, shape: tuple[int, ...], dtype: DType, offset: int) -> Tensor:
   from openpilot.starpilot.models.runtime_bridge.runtime import selected_legacy
   if selected_legacy():
-    view = buffer.view(math.prod(shape), dtype, offset).ensure_allocated()
-    return Tensor(UOp.from_buffer(view)).reshape(shape)
+    view = cast("LegacyBuffer", buffer).view(math.prod(shape), dtype, offset).ensure_allocated()
+    return Tensor(cast("LegacyUOpFactory", UOp).from_buffer(view)).reshape(shape)
   view = buffer.view(math.prod(shape) * dtype.itemsize, offset).ensure_allocated()
   return Tensor(UOp.from_buffer(view, dtype)).reshape(shape)
 
@@ -239,7 +242,8 @@ class ModelState:
     self.input_device.copy_from(self.input_host)
     self.input_queues['new_img'] = self.run_warp(**self.warp_inputs)
     self.run_model(output_buffers=self.outputs, **self.input_queues)
-    if self.chestnut and not selected_legacy() and (err := Device[self.outputs['outputs'].device].error_state.host.view(fmt='q')[0]):
+    if (self.chestnut and not selected_legacy() and
+        (err := Device[cast(str, self.outputs['outputs'].device)].error_state.host.view(fmt='q')[0])):
       raise RuntimeError(f"chestnut failed with {err}")
     if after_enqueue is not None:
       after_enqueue()
@@ -350,6 +354,8 @@ def main(demo=False):
   # LAT_SMOOTH_SECONDS, and the manager runs modeld by its module name, so they all see it
   global LAT_SMOOTH_SECONDS
   LAT_SMOOTH_SECONDS = lateral_smooth_seconds(CP, LAT_SMOOTH_SECONDS)
+  from openpilot.starpilot.car.subaru.smoothing import read_frozen, seconds as subaru_smooth_seconds, filter_action
+  subaru_smoothing = read_frozen(CP, params)
 
   st = time.monotonic()
   cloudlog.warning("loading model")
@@ -412,7 +418,8 @@ def main(demo=False):
       # A timed-out loader can still mutate tinygrad's shared device state.
       # The manager must confirm this process has exited before starting Small.
       cloudlog.error("Chestnut startup failed; requesting isolated Small restart")
-      raise SystemExit(STARTUP_FALLBACK_EXIT)
+      # Avoid Python/native finalizers retaining this failed GPU context.
+      os._exit(STARTUP_FALLBACK_EXIT)
 
   if small_model is None:
     small_model, small_prepared, selected_small_failed = load_small()
@@ -480,7 +487,7 @@ def main(demo=False):
   initial_mono_ns, initial_boot_ns, initial_skew_ns = paired_clocks_ns()
   lane_clock_guard = ClockEpochGuard(initial_mono_ns, initial_boot_ns, initial_skew_ns)
   DH = DesireHelper(runtime_lane_policy, nudge_torque=lane_change_nudge_torque(CP))
-  navigation_turn = TurnIntent()
+  navigation_turn = TurnIntent(params, CP)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
 
@@ -527,7 +534,8 @@ def main(demo=False):
     frame_id = sm["narrowRoadCameraState"].frameId
     v_ego = max(sm["carState"].vEgo, 0.)
     lateral_delay = scheduled_lateral_delay(lat_delay_schedule, v_ego) if lat_delay_schedule else sm["lateralDelay"].lateralDelay
-    lat_delay = lateral_delay + LAT_SMOOTH_SECONDS
+    subaru_tau = subaru_smooth_seconds(v_ego, subaru_smoothing)
+    lat_delay = lateral_delay + LAT_SMOOTH_SECONDS + subaru_tau
     if sm.updated["extrinsicsCalibration"] and sm.seen['narrowRoadCameraState'] and sm.seen['deviceState']:
       device_from_calib_euler = np.array(sm["extrinsicsCalibration"].rpyCalib, dtype=np.float32)
       # the virtual pair has the comma 4's cameras
@@ -613,12 +621,13 @@ def main(demo=False):
         receipt_owner.loaded(small_prepared, ModelVariant.SMALL, model_id=small_model.model_id)
       cloudlog.event("jetlinkHandover", state=HOOKS.state(model), handovers=model.handovers)
 
-    if model_output is not None:
+    if model_output is not None and vipc_dropped_frames == 0:
       modelv2_send = messaging.new_message('modelV2')
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego)
+      filter_action(action, prev_action, v_ego, subaru_tau)
       prev_action = action
       # Night Star port: the Honda EPS command delay follows where the steering comes from. It changes only when the
       # driving model does (a swap, a Chestnut stall that restarts the small model), so it rides on a param rather

@@ -638,7 +638,9 @@ static safety_config hyundai_init(uint16_t param) {
   };
 
   hyundai_common_init(param);
-  hyundai_long_main_policy = ((param == 0x800EU) && (alternative_experience == 0U)) ? HYUNDAI_MAIN_TRACK : HYUNDAI_MAIN_NONE;
+  if ((param == 0x800EU) && (alternative_experience == 0)) {
+    hyundai_long_main_policy = HYUNDAI_MAIN_TRACK;
+  }
   classic_non_scc_aol_configure(param, false);
   blended_aol_configure(param);
   hyundai_blended_alpha = false;
@@ -723,7 +725,7 @@ static safety_config hyundai_init(uint16_t param) {
       {0x50, 0, 16, .check_relay = true, .disable_static_blocking = true},
       {0x4F1, 1, 4, .check_relay = false},
       {0x2A4, 0, 24, .check_relay = true, .disable_static_blocking = true},
-      {0x485, 1, 8, .check_relay = true, .disable_static_blocking = true},
+      {0x485, 1, 8, .check_relay = false, .disable_static_blocking = true},
     };
     static const CanMsg blended_aol_tx_msgs[] = {
       {0x340, 0, 8, .check_relay = true, .disable_static_blocking = true},

@@ -1,6 +1,7 @@
 import { reactive } from "../vendor/vue/vue.esm-browser.js"
 import { GxDialog } from "./dialog.js"
 import { GxNotice } from "./notice.js"
+import { beginSave, finishSave } from "./save-feedback.js"
 
 export const ToyotaToolsPage = {
   props: { mode: String, unauthorized: Function },
@@ -53,21 +54,25 @@ export const ToyotaToolsPage = {
     async confirm() {
       const payload = this.state.pending
       this.state.pending = null
+      const feedback = beginSave()
       const result = await this.request(payload)
+      finishSave(feedback, result?.saved === true)
       this.state.value = ""
       if (result?.saved) await this.load()
       else if (this.alive) this.timer = setTimeout(() => this.load(), 2000)
     },
   },
   template: `<section v-if="mode === 'local' && (state.data?.visible || state.error)" class="gx-card" aria-label="Toyota features">
-    <h3>Toyota Features</h3><GxNotice v-if="state.error" tone="danger">{{ state.error }}</GxNotice>
+    <div class="gx-section__header"><i class="bi bi-car-front" aria-hidden="true"></i><span class="gx-section__title">Toyota Features</span></div><div class="gx-panel gx-stack"><GxNotice v-if="state.error" tone="danger">{{ state.error }}</GxNotice>
     <template v-if="state.data?.visible">
       <p>Changes apply after the next start. Only the connected Toyota controller can send door commands.</p>
       <p v-if="!state.data.parked || !state.data.readable">Park the car and refresh before changing these settings.</p>
-      <div class="gx-actions"><button class="gx-btn gx-btn--tonal" :disabled="state.busy || !state.data.parked || !state.data.readable"
-        @click="choose('lock', null, !state.data.lock)">Auto lock leaving Park: {{ state.data.lock ? 'On' : 'Off' }}</button>
-      <button class="gx-btn gx-btn--tonal" :disabled="state.busy || !state.data.parked || !state.data.readable"
-        @click="choose('unlock', null, !state.data.unlock)">Auto unlock entering Park: {{ state.data.unlock ? 'On' : 'Off' }}</button></div>
+      <div class="gx-row gx-row--borderless"><span class="gx-row__info gx-row__label">Auto lock leaving Park</span>
+        <label class="gx-switch"><input type="checkbox" role="switch" aria-label="Auto lock leaving Park" :checked="state.data.lock" :disabled="state.busy || !state.data.parked || !state.data.readable"
+          @change="$event.target.checked=state.data.lock; choose('lock', null, !state.data.lock)"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label></div>
+      <div class="gx-row gx-row--borderless"><span class="gx-row__info gx-row__label">Auto unlock entering Park</span>
+        <label class="gx-switch"><input type="checkbox" role="switch" aria-label="Auto unlock entering Park" :checked="state.data.unlock" :disabled="state.busy || !state.data.parked || !state.data.readable"
+          @change="$event.target.checked=state.data.unlock; choose('unlock', null, !state.data.unlock)"><span class="gx-switch__track"></span><span class="gx-switch__thumb"></span></label></div>
       <p>Commands are sent once at a stationary gear transition with doors closed. Door response must be checked on your vehicle.</p>
       <template v-if="state.data.security"><h4>Toyota Security Keys</h4>
         <p>{{ state.data.activePresent ? 'A key is saved for the next start.' : 'No valid active key is saved.' }} Key values are never displayed.</p>
@@ -83,6 +88,6 @@ export const ToyotaToolsPage = {
     <GxDialog v-if="state.pending" labelledby="gx-toyota-confirm" @close="cancel()"><h3 id="gx-toyota-confirm">Save Toyota preference?</h3>
       <p>The change applies after the next start. Deleting a saved key copy does not clear the active key.</p>
       <div class="gx-actions"><button class="gx-btn gx-btn--tonal" @click="cancel()">Cancel</button><button class="gx-btn" @click="confirm()">Confirm</button></div>
-    </GxDialog>
+    </GxDialog></div>
   </section>`,
 }

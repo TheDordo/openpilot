@@ -6,7 +6,7 @@ from collections.abc import Callable
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.label import UnifiedLabel
 from openpilot.system.ui.widgets.scroller import DO_ZOOM
-from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos, TextAlignmentVertical
+from openpilot.system.ui.lib.application import gui_app, FontWeight, MousePos, TextAlignmentVertical, FONT_SCALE
 from openpilot.common.filter_simple import BounceFilter
 
 if TYPE_CHECKING:
@@ -252,10 +252,15 @@ class BigButton(BaseButton):
     self._label.set_color(label_color)
     label_rect = rl.Rectangle(label_x, btn_y + self.LABEL_VERTICAL_PADDING, self._title_width_hint(),
                               self._rect.height - self.LABEL_VERTICAL_PADDING * 2)
+    gap = 4 if self.text and self.value else 0
+    if self.text and self.value:
+      label_rect.height -= self._sub_label.font_size * FONT_SCALE + gap
+      while self._label.font_size > 32 and self._label.get_content_height(int(label_rect.width)) > label_rect.height:
+        self._label.set_font_size(max(32, self._label.font_size - 6))
     self._label.render(label_rect)
 
     if self.value:
-      label_y = label_rect.y + self._label.get_content_height(int(label_rect.width))
+      label_y = label_rect.y + min(label_rect.height, self._label.get_content_height(int(label_rect.width))) + gap
       sub_label_height = btn_y + self._rect.height - self.LABEL_VERTICAL_PADDING - label_y
       sub_label_rect = rl.Rectangle(label_x, label_y, self._subtitle_width_hint(), sub_label_height)
       self._draw_subtitle(sub_label_rect)

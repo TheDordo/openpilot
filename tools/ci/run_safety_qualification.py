@@ -93,6 +93,9 @@ def source_identity():
 def prerequisite_artifact_paths(prerequisites, name):
   paths = list(prerequisites)
   if name in ("coverage", "mutation-full"):
+    if "msgq_repo/msgq/visionipc/visionipc_pyx.so" not in paths:
+      paths.append("msgq_repo/msgq/visionipc/visionipc_pyx.so")
+  if name in ("coverage", "mutation-full"):
     generated = "openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/"
     extension = ".dylib" if sys.platform == "darwin" else ".so"
     paths.append(generated + "libacados_ocp_solver_long" + extension)
@@ -234,7 +237,9 @@ def complete_mutation_artifact(path, summary, *, digest_out=None):
     return False
 
 
-def check_import_origins(python, env, output):
+def check_import_origins(python, env, output, *, full_catalog=False):
+  sidecar = output.with_suffix(".origins.json")
+  sidecar.unlink(missing_ok=True)
   script = """
 import json
 from pathlib import Path
@@ -253,12 +258,19 @@ print(json.dumps({name: str(Path(module.__file__).resolve()) for name, module in
                    ('cereal_messaging', openpilot.cereal.messaging), ('msgq_ipc', msgq.ipc_pyx)]} |
                   {'panda': importlib.util.find_spec('panda').origin}))
 """
+  if full_catalog:
+    script += """
+import msgq.visionipc.visionipc_pyx
+print(json.dumps({'msgq_visionipc': str(Path(msgq.visionipc.visionipc_pyx.__file__).resolve())}))
+"""
   result = subprocess.run([python, "-c", script], cwd=output.parent, env=env, capture_output=True, text=True)
   output.write_text(result.stdout + result.stderr)
   if result.returncode:
     return False
   try:
-    origins = json.loads(result.stdout)
+    origins = {}
+    for line in result.stdout.splitlines():
+      origins.update(json.loads(line))
   except json.JSONDecodeError:
     return False
   expected = {"opendbc": ROOT / "opendbc_repo", "panda": ROOT / "panda", "msgq": ROOT / "msgq_repo",
@@ -266,12 +278,17 @@ print(json.dumps({name: str(Path(module.__file__).resolve()) for name, module in
               "can_parser": ROOT / "opendbc_repo", "can_packer": ROOT / "opendbc_repo",
               "can_dbc": ROOT / "opendbc_repo", "cereal_log": ROOT / "openpilot/cereal",
               "cereal_messaging": ROOT / "openpilot/cereal", "msgq_ipc": ROOT / "msgq_repo"}
-  return all(isinstance(origins.get(name), str) and Path(origins[name]).is_relative_to(path)
-             for name, path in expected.items())
+  if full_catalog:
+    expected["msgq_visionipc"] = ROOT / "msgq_repo"
+  valid = all(isinstance(origins.get(name), str) and Path(origins[name]).is_relative_to(path)
+              for name, path in expected.items())
+  if valid:
+    sidecar.write_text(json.dumps(origins, sort_keys=True) + "\n")
+  return valid
 
 
 def imported_module_hashes(output):
-  origins = json.loads(output.read_text().splitlines()[0])
+  origins = json.loads(output.with_suffix(".origins.json").read_text())
   return {name: {"path": path, "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest()}
           for name, path in origins.items()}
 
@@ -451,6 +468,19 @@ suite.addTests(unittest.TestLoader().loadTestsFromName('opendbc.bluepilot_latera
       code, text = self.run("unittest", [self.python, "-c", suite_script, str(native)], cwd=SAFETY_TESTS)
       summary = parse_unittest_summary(text)
       self.summary = summary
+      pytest_results = self.output / "pytest-coverage-results.json"
+      pytest_code, _ = self.run("pytest-coverage", [self.python, str(ROOT / "tools/ci/safety_pytest_coverage.py"),
+                                  "--native", str(native), "--results-json", str(pytest_results)], cwd=ROOT)
+      try:
+        from tools.ci.safety_pytest_coverage import report_complete, targets_for_coverage
+        pytest_report = json.loads(pytest_results.read_text())
+        pytest_ok = report_complete(pytest_report, targets_for_coverage(), hashlib.sha256(native.read_bytes()).hexdigest())
+      except (OSError, ValueError, TypeError, KeyError):
+        pytest_report, pytest_ok = {}, False
+      self.summary["pytest_coverage"] = {"complete": pytest_ok, "collected": len(pytest_report.get("nodeids", [])),
+                                        "ran": len(pytest_report.get("records", []))}
+      if pytest_results.is_file():
+        self.hash_artifact(pytest_results)
       if sys.platform == "darwin":
         found, llvm_cov = self.run("llvm-cov-path", ["xcrun", "--find", "llvm-cov"])
         if found:
@@ -463,7 +493,7 @@ suite.addTests(unittest.TestLoader().loadTestsFromName('opendbc.bluepilot_latera
       for source_root in SAFETY_SOURCE_ROOTS:
         coverage_argv += ["--filter", re.escape(source_root.resolve().as_posix() + "/")]
       gcovr, _ = self.run("coverage", coverage_argv, cwd=SAFETY_TESTS)
-      return code == 0 and complete_unittest(summary) and gcovr == 0
+      return code == 0 and complete_unittest(summary) and pytest_code == 0 and pytest_ok and gcovr == 0
     if self.name in ("opendbc-misra", "panda-misra"):
       if self.name == "panda-misra":
         built, _ = self.run("build-h7", ["scons", "-j4", "panda/board/obj/panda_h7/main.elf",
@@ -550,7 +580,8 @@ def main():
     prerequisite = f"openpilot/common/libparams_c{extension}"
     prerequisites = [prerequisite, "msgq_repo/msgq/ipc_pyx.so"]
     if args.gate in ("coverage", "mutation-full"):
-      # The full catalog includes actual Card consumers importing the longitudinal planner.
+      # The full catalog includes actual Card and SelfdriveD consumers.
+      prerequisites.append("msgq_repo/msgq/visionipc/visionipc_pyx.so")
       prerequisites.append("openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/c_generated_code/acados_ocp_solver_pyx.so")
     built, _ = gate.run("build-imports", ["scons", "--minimal", "-j4", *prerequisites], timeout=3600)
     if built:
@@ -571,7 +602,7 @@ def main():
     for artifact in bound_artifacts:
       gate.hash_artifact(ROOT / artifact)
     prerequisite_artifacts = prerequisite_artifact_identity(bound_artifacts)
-    origins_ok = check_import_origins(gate.python, gate.env, output / "imports.log")
+    origins_ok = check_import_origins(gate.python, gate.env, output / "imports.log", full_catalog=args.gate in ("coverage", "mutation-full"))
     if origins_ok:
       imported_before = imported_module_hashes(output / "imports.log")
     version_codes = [gate.run("python-version", [gate.python, "--version"])[0],

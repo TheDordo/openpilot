@@ -6,9 +6,17 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from typing import TypedDict
 import unittest
 
 from openpilot.starpilot.models.runtime_bridge import bootstrap
+
+
+class RuntimeManifest(TypedDict):
+  compiler_revision: str
+  adapter: str
+  roles: dict[str, list[str]]
+  files: dict[str, str]
 
 
 class ProcessCustody(unittest.TestCase):
@@ -23,6 +31,7 @@ class ProcessCustody(unittest.TestCase):
     saved_modules = sys.modules.copy()
     saved_env = dict(os.environ)
     saved_path = sys.path[:]
+    saved_meta_path = sys.meta_path[:]
     saved_importers = sys.path_importer_cache.copy()
     saved_bytecode = sys.dont_write_bytecode
     saved_prefix = sys.pycache_prefix
@@ -33,6 +42,7 @@ class ProcessCustody(unittest.TestCase):
       os.environ.clear()
       os.environ.update(saved_env)
       sys.path[:] = saved_path
+      sys.meta_path[:] = saved_meta_path
       sys.dont_write_bytecode = saved_bytecode
       sys.pycache_prefix = saved_prefix
       importlib.invalidate_caches()
@@ -80,7 +90,7 @@ class BootstrapFixture(ProcessCustody):
 
   def seal(self):
     files = {name: hashlib.sha256((self.bundle / name).read_bytes()).hexdigest() for name in self.sources}
-    self.manifest = {
+    self.manifest: RuntimeManifest = {
       'compiler_revision': bootstrap.LEGACY_REVISION, 'adapter': 'bounded-host-v2',
       'roles': {'driving': ['QCOM', 'USB+AMD:LLVM'], 'monitoring': ['QCOM']}, 'files': files,
     }

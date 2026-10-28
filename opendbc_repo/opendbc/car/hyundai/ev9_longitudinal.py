@@ -1,10 +1,11 @@
 # EV9 calibration extracted from the reached Dom controller; isolated from Ioniq6 policy.
 # Preserve source calibration, 20Hz update and 50Hz stop latch separately.
 from dataclasses import dataclass
+from capnp.lib.capnp import _DynamicStructBuilder, _DynamicStructReader
 import numpy as np
 from opendbc.car import DT_CTRL, structs
 from opendbc.car.hyundai.values import CAR
-from opendbc.car.hyundai.ccnc_ev_stock import qualified as stock_qualified
+from opendbc.car.hyundai.ccnc_ev_stock import qualified as stock_qualified, metadata_qualified
 
 class CarControllerParams:
   ACCEL_MIN = -3.5
@@ -151,7 +152,9 @@ def update_ioniq_6_longitudinal_tuning(state: Ioniq6LongitudinalTuningState, acc
       (state.long_control_state_last == LongCtrlState.starting and long_control_state == LongCtrlState.pid and v_ego < IONIQ_6_LAUNCH_HOLD_SPEED_BP[-1]):
     state.launch_active = True
 
-  upper_speed_limit = float(np.interp(v_ego, [0.0, 5.0, 20.0], [2.0, 3.0, 2.0])) * IONIQ_6_RESPONSE_MULTIPLIER if long_control_state == LongCtrlState.pid else IONIQ_6_LONG_MIN_JERK
+  upper_speed_limit = (
+    float(np.interp(v_ego, [0.0, 5.0, 20.0], [2.0, 3.0, 2.0])) * IONIQ_6_RESPONSE_MULTIPLIER if long_control_state == LongCtrlState.pid else
+    IONIQ_6_LONG_MIN_JERK)
   lower_speed_limit = float(np.interp(v_ego, [0.0, 5.0, 20.0], [5.0, 3.5, 3.0])) * IONIQ_6_RESPONSE_MULTIPLIER
 
   future_t_upper = float(np.interp(v_ego, IONIQ_6_LONG_LOOKAHEAD_JERK_BP, IONIQ_6_LONG_LOOKAHEAD_JERK_V))
@@ -246,7 +249,6 @@ def update_blindspot_warning(state: BlindspotWarningState, escalated: bool,
   )
 
 
-
 class EV9LongitudinalPolicy:
   def __init__(self):
     self.tuning = Ioniq6LongitudinalTuningState()
@@ -272,12 +274,16 @@ class EV9LongitudinalPolicy:
     return None
 
 
-
 STOCK_PARAM = 0x5c91
 LONG_PARAM = 0x5c95
 
 
 def copy_cp(cp):
+  # Copy the message directly; dictionary reconstruction traverses every field.
+  if type(cp) is _DynamicStructBuilder and cp.schema == structs.CarParams.schema:
+    return cp.copy()
+  if type(cp) is _DynamicStructReader and cp.schema == structs.CarParams.schema:
+    return cp.as_builder()
   with structs.CarParams.from_bytes(structs.CarParams.new_message(**cp.to_dict()).to_bytes()) as reader:
     return reader.as_builder()
 
@@ -305,9 +311,14 @@ def candidate(stock, *, enabled, is_release):
 
 def qualified(cp):
   if (cp.carFingerprint != CAR.KIA_EV9 or not cp.openpilotLongitudinalControl or cp.pcmCruise or
+      cp.alternativeExperience not in (0, 32) or
       not cp.alphaLongitudinalAvailable or len(cp.safetyConfigs) != 1 or cp.safetyConfigs[0].safetyParam != LONG_PARAM):
     return False
-  return stock_qualified(stock_copy(cp))
+  if type(cp) is _DynamicStructBuilder and cp.schema == structs.CarParams.schema:
+    return metadata_qualified(cp)
+  stock = stock_copy(cp)
+  stock.alternativeExperience = 0
+  return stock_qualified(stock)
 
 
 class LegacyAngleEnvelope:
@@ -323,14 +334,13 @@ class LegacyAngleEnvelope:
     return curvature * 2.75600004196167 * 13.699999809265137 * (1.0 - (-0.0006085930193026732) * speed ** 2)
 
 
-
-def lateral_request_allowed(control, state, angle_fault):
+def lateral_request_allowed(control, state, angle_fault, *, independent=False):
   """Host half of the existing exact5c95 native actuation predicates.
 
-  Independent AOL cannot supply authority. Unlike the original reached caller,
-  stale latActive alone does not bypass engagement, pedals, standstill or health.
-  CAN validity is the host's observable health; native RX validation remains final.
+  The paired exact EV9 AOL profile may request lateral-only control. Its
+  native physical latch and current axis/session proof remain final authority.
+  Both modes retain pedal, standstill, gear, fault and CAN-health refusals.
   """
-  return (control.enabled and state.canValid and not state.canTimeout and not state.standstill and
+  return ((control.enabled or (independent and control.latActive)) and state.canValid and not state.canTimeout and not state.standstill and
           state.gearShifter == structs.CarState.GearShifter.drive and
           not (state.brakePressed or state.gasPressed or state.steerFaultTemporary or state.steerFaultPermanent or angle_fault))

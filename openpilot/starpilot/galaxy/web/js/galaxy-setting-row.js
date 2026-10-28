@@ -1,5 +1,6 @@
 import { GalaxySelect } from "./galaxy-select.js"
 import { haptic } from "./haptics.js"
+import { beginSave, finishSave, showDraftChange } from "./save-feedback.js"
 
 export const FINE_SCRUB_HOLD_MS = 300
 export const FINE_SCRUB_FACTOR = 5
@@ -64,6 +65,7 @@ export const GalaxySettingRow = {
     index: { type: Number, required: true },
     disabled: { type: Boolean, default: false },
     busy: { type: Boolean, default: false },
+    feedback: { type: String, default: "saved" },
     saveValue: { type: Function, required: true },
   },
   emits: ["open", "review", "reset-default"],
@@ -99,7 +101,18 @@ export const GalaxySettingRow = {
       if (savedValue === null) return
       this.preview = value
       this.updating = true
-      try { await this.saveValue(this.index, savedValue) }
+      const token = this.feedback === "saved" && this.control === "switch" ? beginSave() : null
+      try {
+        const result = await this.saveValue(this.index, savedValue)
+        if (token !== null) {
+          await this.$nextTick()
+          finishSave(token, result !== false && result !== null &&
+            (result === true || result?.saved === true || String(this.presentedRow.value) === String(value)))
+        } else if (this.feedback === "draft" && this.control === "switch" && result !== false) showDraftChange()
+      } catch (error) {
+        if (token !== null) finishSave(token, false)
+        throw error
+      }
       finally { this.preview = undefined; this.updating = false }
     },
     onSwitch(event) {
@@ -205,7 +218,8 @@ export const GalaxySettingRow = {
     <div class="gx-row" :class="{ disabled: dimmed, 'gx-row--stack': control === 'slider' }" :inert="busy || updating" :aria-busy="busy || updating || undefined">
       <div class="gx-row__info">
         <span class="gx-row__label">{{ row.label }}</span>
-        <span v-if="presentedRow.reason" class="gx-row__desc">{{ ' ' + presentedRow.reason.replace('https://firestar.link/discord', '') }}<a v-if="presentedRow.reason.includes('https://firestar.link/discord')" href="https://firestar.link/discord" target="_blank" rel="noopener">StarPilot Discord</a></span>
+        <span v-if="presentedRow.reason" class="gx-row__desc">{{ ' ' + presentedRow.reason.replace('https://firestar.link/discord', '') }}</span>
+        <a v-if="presentedRow.reason?.includes('https://firestar.link/discord')" class="gx-btn gx-btn--tonal" href="https://firestar.link/discord" target="_blank" rel="noopener">StarPilot Discord</a>
         <span v-if="control === 'group' || control === 'action'" class="gx-row__desc">{{ presentedRow.value }}</span>
       </div>
       <button v-if="control !== 'slider' && showDefault" type="button"

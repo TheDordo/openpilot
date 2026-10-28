@@ -38,6 +38,8 @@ class Inputs:
   lane_direction: int = 0
   limit_status: int = 0
   geometry: LaneGeometry | None = None
+  speed_min: float | None = None
+  speed_max: float | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,12 @@ class AngleController:
     if not i.active or not all(math.isfinite(v) for v in values) or i.speed < 0.0:
       self.reset()
       return Command()
+    speed_min = max(i.speed, 0.1) if i.speed_min is None else i.speed_min
+    speed_max = max(i.speed, 0.1) if i.speed_max is None else i.speed_max
+    if (not all(math.isfinite(v) for v in (speed_min, speed_max)) or
+        not 0 < speed_min <= max(i.speed, 0.1) <= speed_max):
+      self.reset()
+      return Command()
     if i.steering_pressed and not self.press_last:
       self.preturned = abs(i.steering_angle) > 45.0
     self.press_last = i.steering_pressed
@@ -119,7 +127,7 @@ class AngleController:
     entering = bool(curves) and abs(interp(base, i.time_indices, curves)) > abs(i.desired_curvature)
     factor = 1.0 if entering else interp(abs(i.desired_curvature), (0.005, 0.020), (1.0, 0.0))
     lookup = base + bounds.VLT_EXTRA * interp(i.speed, (11.176, 24.5872), (1.0, 0.0)) * factor
-    predicted = interp(lookup, i.time_indices, curves) if curves else i.desired_curvature
+    predicted = interp(lookup, i.time_indices, curves) if curves else 0.0
     saturated = i.limit_status >= 2 or self.path_last >= 0.5235 * 0.9 or self.path_last <= -0.5 * 0.9
     falling = abs(i.desired_curvature) < abs(self.desired_last) - 0.010
     blend = bounds.BLEND * 0.25 if not entering and (i.limit_status >= 1 or saturated or falling) else bounds.BLEND
@@ -152,7 +160,7 @@ class AngleController:
     # measured-curvature interval and the modern ISO envelope. If those bands
     # cannot meet the previous actuator ROC, send a neutral mode-0 frame.
     effective_speed = max(i.speed, 0.1)
-    cap = min(bounds.CURVATURE_MAX, bounds.LATERAL_ACCEL / max(i.speed, 1.0) ** 2)
+    cap = min(bounds.CURVATURE_MAX, bounds.LATERAL_ACCEL / max(speed_max, 1.0) ** 2)
     low_kappa, high_kappa = -cap, cap
     if i.speed > 9.0:
       low_kappa = max(low_kappa, i.measured_curvature - 0.0018)
@@ -161,8 +169,10 @@ class AngleController:
     # gain (0.95..1.3), so the worst equivalent curvature remains bounded.
     lower_gain = bounds.GAIN_MAX if low_kappa >= 0.0 else bounds.GAIN_MIN
     upper_gain = bounds.GAIN_MIN if high_kappa >= 0.0 else bounds.GAIN_MAX
-    lower = max(-bounds.PATH_MAX, low_kappa * effective_speed * lower_gain, self.path_last - roc)
-    upper = min(-bounds.PATH_MIN, high_kappa * effective_speed * upper_gain, self.path_last + roc)
+    lower_speed = speed_max if low_kappa >= 0.0 else speed_min
+    upper_speed = speed_min if high_kappa >= 0.0 else speed_max
+    lower = max(-bounds.PATH_MAX, low_kappa * lower_speed * lower_gain, self.path_last - roc)
+    upper = min(-bounds.PATH_MIN, high_kappa * upper_speed * upper_gain, self.path_last + roc)
     # Bound the actual-angle equivalent derivative at the worst admitted gain.
     # 45ms core margin remains inside the native elapsed-time/50ms cap.
     jerk_delta = bounds.LATERAL_JERK / max(i.speed - 1.0, 1.0) ** 2 * bounds.CORE_STEER_PERIOD_S * bounds.GAIN_MIN * effective_speed

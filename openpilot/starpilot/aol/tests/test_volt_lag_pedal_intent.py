@@ -50,6 +50,11 @@ def callers(cleanup, cp=None):
       assert cs.canValid and not cs.canTimeout
       return cs
     packets = parsed_packets(card.CP, packer, now, tick, 20., main)
+    if card.CP.pcmCruise:
+      # Factory adaptive standby; state zero reports non-adaptive cruise.
+      address = packer.make_can_msg('ASCMActiveCruiseControlStatus', 2, {})[0]
+      packets = [row for row in packets if not (row[0] == address and row[2] == 2)]
+      packets.append(packer.make_can_msg('ASCMActiveCruiseControlStatus', 2, {'ACCCruiseState': 2}))
     addresses = {packer.make_can_msg(name, 0, {})[0] for name in ('ECMAcceleratorPos', 'EBCMRegenPaddle')}
     packets = [p for p in packets if p[0] not in addresses]
     packets += [packer.make_can_msg('ECMAcceleratorPos', 0, {'BrakePedalPos': 12 if pedal == 'brake' else 0}),
@@ -95,7 +100,10 @@ def test_parsed_pedal_lag_keeps_intent_without_renewing_authority(pedal, order, 
     cs = parse(2, pedal)
     with mock.patch.object(sd.rk.avg_dt, 'get_average', return_value=.02):
       axis, _, command = drive(2, cs)
-    assert not command.latActive and not command.longActive and str(axis.faultReason) == 'critical'
+    assert not command.latActive and not command.longActive and str(axis.faultReason) == 'availabilityPause'
+    assert not axis.lateralActive and not axis.longitudinalActive and not axis.nativeAcknowledged
+    assert axis.faultSessionId == sd.aol_session_id and axis.faultEventMonoTime == BASE + 20_000_000
+    assert sd.aol_published_fault_proof is None
     assert not axis.desiredLateral and not axis.desiredLongitudinal
     proof, event = sd.pm.messages['aolAxisState'], sd.pm.messages['onroadEvents']
     if order != 'together':
@@ -178,8 +186,19 @@ def test_pedal_overlap_never_bypasses_other_rejection(bad):
       setattr(cs, {'can_invalid': 'canValid', 'permanent_eps': 'steerFaultPermanent',
                    'door': 'doorOpen', 'belt': 'seatbeltUnlatched'}[bad], bad != 'can_invalid')
     sd.pm.messages['aolAxisState'] = proof.as_reader()
+    baseline = (card.aol_transport_feedback.lateral_baseline_ns, card.aol_transport_feedback.lateral_source_ns,
+                card.aol_transport_feedback.lateral_native_ns)
     deliver_card(card, sd, controls, cs, 2)
-    assert not card.aol_card_intent.allowed_latch
+    intent_only = bad in ('commIssue', 'processNotRunning', 'native_long', 'belt')
+    assert card.aol_card_intent.allowed_latch == intent_only
+    if intent_only:
+      # Qualified SOFT withdrawal retains intent, never an output permission.
+      assert str(proof.aolAxisState.faultReason) == 'availabilityPause'
+      assert not proof.aolAxisState.lateralActive and not proof.aolAxisState.longitudinalActive
+      assert not proof.aolAxisState.nativeAcknowledged
+      assert not card.sm['carControl'].latActive and not card.sm['carControl'].longActive
+      assert baseline == (card.aol_transport_feedback.lateral_baseline_ns, card.aol_transport_feedback.lateral_source_ns,
+                          card.aol_transport_feedback.lateral_native_ns)
 
 
 @pytest.mark.parametrize('pedal', ['brake', 'regen'])

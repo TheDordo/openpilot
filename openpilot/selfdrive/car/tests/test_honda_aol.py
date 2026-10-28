@@ -1,6 +1,5 @@
 """Honda AOL host qualification and serialized integration tests."""
 
-import time
 import unittest
 from unittest import mock
 
@@ -13,10 +12,6 @@ from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.values import CAR, CarControllerParams, HondaFlags
 from openpilot.common.params import Params
 from openpilot.selfdrive.car.card import Car
-from openpilot.selfdrive.selfdrived.selfdrived import SelfdriveD
-from openpilot.selfdrive.controls.controlsd import Controls
-from openpilot.starpilot.aol.intent import read_settings
-from openpilot.starpilot.aol.wire import SafetyState, decode_intent, encode_safety
 from openpilot.starpilot.car.honda.aol import CLASSIC_BOSCH_AOL_CARS, qualified_honda
 
 
@@ -141,7 +136,11 @@ class HondaFamilyQualificationTests(unittest.TestCase):
           expected = alpha_long or candidate != CAR.HONDA_ACCORD
           self.assertEqual(card.aol_qualified, expected)
           self.assertEqual(bool(card.CP.safetyConfigs[0].safetyParam & 32), alpha_long)
-          experience = 32 if expected and not alpha_long else 0
+          stock_owned = candidate != CAR.HONDA_ACCORD
+          experience = 32 if expected and stock_owned else 0
+          if alpha_long and stock_owned:
+            word = 2211 if candidate == CAR.ACURA_RDX_3G else 2082 | int(bool(card.CP.flags & HondaFlags.BOSCH_ALT_BRAKE))
+            self.assertEqual(card.CP.safetyConfigs[0].safetyParam, word)
           self.assertEqual(card.CP.alternativeExperience, experience)
           with car.CarParams.from_bytes(params.get('CarParams')) as published:
             self.assertEqual(bool(published.safetyConfigs[0].safetyParam & 32), alpha_long)
@@ -149,147 +148,24 @@ class HondaFamilyQualificationTests(unittest.TestCase):
 
 
 class HondaHostTests(unittest.TestCase):
+  @classmethod
+  def setUpClass(cls):
+    super().setUpClass()
+    from openpilot.starpilot.aol.tests.honda_native_fixture import honda_native_pair
+    cls.honda_native_origins = cls.enterClassContext(honda_native_pair())
+
   def test_real_car_params_selfdrive_controls_chain_fails_closed(self):
-    class FakeHonda:
-      CC = object()
-      CS = object()
-
-      def __init__(self):
-        self.CP = CarInterface.get_params(CAR.HONDA_CIVIC_BOSCH, gen_empty_fingerprint(), [], True, False, False)
-
-      def update(self, _can):
-        state = car_state()
-        state.cruiseState.available = True
-        return state
-
-      def init(self, _cp, _recv, _send):
-        pass
-
-      def apply(self, _control, _now_ns):
-        return car.CarControl.Actuators(), []
-
-    class FakeRadar(RadarInterfaceBase):
-      def update(self, can_packets):
-        return None
-
-    with (OpenpilotPrefix(), mock.patch.dict('os.environ', {'AOL_REPLAY_RUNTIME': '1', 'SIMULATION': '1'}),
-          mock.patch('openpilot.selfdrive.selfdrived.selfdrived.SIMULATION', False)):
-      messaging.reset_context()
-      params = Params()
-      params.put_bool('OpenpilotEnabledToggle', True, block=True)
-      params.put_bool('AlwaysOnLateral', True, block=True)
-      honda = FakeHonda()
-      card = Car(honda, FakeRadar(honda.CP))
-      self.assertEqual(card.CP.safetyConfigs[-1].safetyParam & 0x20, 0x20)
-      with car.CarParams.from_bytes(params.get('CarParams')) as published:
-        self.assertEqual(published.safetyConfigs[-1].safetyParam & 0x20, 0x20)
-      selfdrive = SelfdriveD()  # reads the actual card-published CarParams
-      controls = Controls()    # reads the same serialized CarParams
-      self.assertTrue(selfdrive.aol_replay and controls.aol_replay)
-      can = messaging.PubMaster(['can'])
-      intent = messaging.SubMaster(['aolIntentWire'])
-      can.send('can', messaging.new_message('can', 1))
-      card.step()
-      intent.update(100)
-      self.assertTrue(intent.seen['aolIntentWire'])
-      self.assertTrue(decode_intent(intent['aolIntentWire']).allowedLatch)
-      selfdrive.step()
-      self.assertFalse(selfdrive.initialized)  # Native acknowledgment must precede bootstrap.
-      controls.sm.update(100)
-      cc, _ = controls.state_control()
-      self.assertFalse(cc.latActive or cc.longActive)  # no native capability/ack
-      self.assertEqual(selfdrive.aol_axis_decision.mode, 'off')
-
-      source = messaging.PubMaster(['aolSafetyWire', 'modelV2', 'extrinsicsCalibration', 'driverMonitoringState'])
-      time.sleep(0.05)  # allow native IPC subscriptions to connect before the first publication
-      model = messaging.new_message('modelV2')
-      model.valid = True
-      calibration = messaging.new_message('extrinsicsCalibration')
-      calibration.valid = True
-      calibration.extrinsicsCalibration.calStatus = log.ExtrinsicsCalibration.Status.calibrated
-      dm = messaging.new_message('driverMonitoringState')
-      dm.valid = True
-      def publish_native(*, requested_long=False):
-        native = messaging.new_message('aolSafetyWire', 0)
-        native.valid = True
-        observed = time.monotonic_ns()
-        native.aolSafetyWire = encode_safety(SafetyState(
-          1, True, observed, observed + 200_000_000, int(car.CarParams.SafetyModel.hondaBosch),
-          card.CP.safetyConfigs[-1].safetyParam, True, requested_long, True, requested_long,
-          'test-panda', selfdrive.aol_session_id))
-        source.send('aolSafetyWire', native)
-
-      for _ in range(3):
-        source.send('modelV2', model)
-        model.clear_write_flag()
-        source.send('extrinsicsCalibration', calibration)
-        calibration.clear_write_flag()
-        source.send('driverMonitoringState', dm)
-        dm.clear_write_flag()
-        publish_native()
-        selfdrive.sm.update(100)
-        controls.sm.update(0)
-      selfdrive.initialized = True
-      with mock.patch.object(selfdrive, 'update_events', side_effect=lambda _cs: selfdrive.events.clear()):
-        can.send('can', messaging.new_message('can', 1))
-        card.step()
-        selfdrive.step()
-      self.assertEqual(selfdrive.aol_axis_decision.mode, 'lateralOnly')
-      controls.sm.update(0)
-      cc, _ = controls.state_control()
-      self.assertTrue(cc.latActive)
-      self.assertFalse(cc.longActive)
-      # The native long request may still reflect a previous combined mode;
-      # this must not interrupt unchanged lateral permission.
-      publish_native(requested_long=True)
-      controls.sm.update(0)
-      cc, _ = controls.state_control()
-      self.assertTrue(cc.latActive)
-      self.assertFalse(cc.longActive)
-      # On the reverse transition, an old lateral-only acknowledgment keeps
-      # lateral active while the newly requested longitudinal axis waits.
-      publish_native()
-      axis_msg = messaging.new_message('aolAxisState')
-      axis_msg.valid = True
-      axis = axis_msg.aolAxisState
-      axis.sessionId = selfdrive.aol_session_id
-      axis.qualified = True
-      axis.desiredLateral = True
-      axis.desiredLongitudinal = True
-      axis.lateralActive = True
-      axis.longitudinalActive = False
-      axis.nativeAcknowledged = True
-      axis.observedMonoTime = time.monotonic_ns()
-      axis.validUntilMonoTime = axis.observedMonoTime + 30_000_000
-      selfdrive.pm.send('aolAxisState', axis_msg)
-      controls.sm.update(0)
-      cc, _ = controls.state_control()
-      self.assertTrue(cc.latActive)
-      self.assertFalse(cc.longActive)
-
-      dm.driverMonitoringState.lockout = True
-      source.send('driverMonitoringState', dm)
-      with mock.patch.object(selfdrive, 'update_events', side_effect=lambda _cs: selfdrive.events.clear()):
-        can.send('can', messaging.new_message('can', 1))
-        card.step()
-        selfdrive.step()
-      self.assertEqual(selfdrive.aol_axis_decision.mode, 'off')
-      controls.sm.update(100)
-      cc, _ = controls.state_control()
-      self.assertFalse(cc.latActive or cc.longActive)
-
-      # Saved AOL off retains the negotiated protocol while ending extra lateral autonomy.
-      params.put_bool('AlwaysOnLateral', False, block=True)
-      assert card.aol_card_intent is not None
-      card.aol_card_intent.settings = read_settings(params)
-      selfdrive.aol_settings = read_settings(params)
-      can.send('can', messaging.new_message('can', 1))
-      card.step()
-      selfdrive.step()
-      controls.sm.update(100)
-      cc, _ = controls.state_control()
-      self.assertFalse(cc.latActive or cc.longActive)
-      self.assertTrue(card.aol_qualified)
+    from openpilot.starpilot.aol.tests import test_honda_recovery_lifecycle as current
+    # The source-bound contract starts unarmed. Actual SET/CAN, C++ negotiation,
+    # native USB status and accepted controller TX establish the later grant.
+    # Fresh DM lockout retains an already armed LAT owner under shared policy;
+    # invalid DM, saved OFF, and unacknowledged LONG still fail closed.
+    caller = current.TestHondaCurrentCaller()
+    for scenario in ('driver_lockout', 'settings_off', 'long_reengage'):
+      with self.subTest(scenario=scenario):
+        caller.run_current_caller(
+          candidate=CAR.HONDA_CIVIC_BOSCH, word=2082, alpha=True,
+          host_scenario=scenario, serialized=True)
 
 
 class CardAxisSessionTests(unittest.TestCase):
@@ -316,16 +192,18 @@ class HondaNidecInterceptorAolTests(unittest.TestCase):
 
   def test_policy_word_and_native_receipt(self):
     from opendbc.car.honda.nidec_interceptor import qualified as interceptor_qualified
-    from openpilot.starpilot.car.honda.aol import native_accepts_cp, native_profile_supported, policy_for, \
-      qualified_nidec_interceptor
+    from opendbc.car.honda.stock_aol import qualified as qualified_stock
+    from openpilot.starpilot.car.honda.aol import native_accepts_cp, native_profile_supported, policy_for
     cp = self.interceptor_cp()
-    self.assertTrue(qualified_nidec_interceptor(cp))
+    self.assertTrue(qualified_stock(cp) and cp.flags & HondaFlags.GAS_INTERCEPTOR)
     self.assertEqual(cp.safetyConfigs[0].safetyParam, 32)
     policy = policy_for(cp)
     self.assertTrue(policy.intent_supported and policy.settings_supported and policy.normal_runtime_supported)
-    self.assertFalse(policy.runtime_supported)  # until card adds the AOL bit
+    self.assertTrue(policy.runtime_supported)  # SGSP's native policy; card adds the AOL bit and alt-exp 32
     self.assertEqual(policy.safety_param_addition, 512)
+    self.assertEqual(policy.alternative_experience_addition, 32)
     cp.safetyConfigs[0].safetyParam |= policy.safety_param_addition
+    cp.alternativeExperience |= policy.alternative_experience_addition
     self.assertTrue(policy_for(cp).runtime_supported)
     self.assertTrue(interceptor_qualified(cp))  # the pedal stays on with the AOL word
     self.assertIsNotNone(CarInterface(cp).CC.nidec_interceptor)
@@ -333,19 +211,14 @@ class HondaNidecInterceptorAolTests(unittest.TestCase):
     self.assertTrue(native_profile_supported(nidec, 544) and native_accepts_cp(cp, nidec, 544))
     self.assertFalse(native_accepts_cp(cp, nidec, 32))
 
-  def test_other_interceptor_cars_and_stock_clarity_are_not_offered(self):
-    from openpilot.starpilot.car.honda.aol import policy_for, qualified_nidec_interceptor
-    for candidate in (CAR.HONDA_CIVIC, CAR.ACURA_ILX, CAR.HONDA_ODYSSEY):
-      with self.subTest(candidate=candidate):
-        cp = self.interceptor_cp(candidate)
-        self.assertFalse(qualified_nidec_interceptor(cp))
-        self.assertEqual(policy_for(cp).safety_param_addition & 512, 0)
+  def test_stock_clarity_is_not_offered_the_pedal_word(self):
+    # SGSP's native Nidec pedal AOL offers the pedal word to every qualified interceptor car; a stock Clarity gets none.
+    from openpilot.starpilot.car.honda.aol import policy_for
     stock = CarInterface.get_params(CAR.HONDA_CLARITY, gen_empty_fingerprint(), [], False, False, False)
-    self.assertFalse(qualified_nidec_interceptor(stock))
     self.assertEqual(policy_for(stock).safety_param_addition & 512, 0)
     cp = self.interceptor_cp()
     cp.safetyConfigs[0].safetyParam = 36
-    self.assertFalse(qualified_nidec_interceptor(cp))
+    self.assertNotEqual(policy_for(cp).safety_param_addition, 512)
 
   def test_card_opts_in_from_saved_request_without_replay_env(self):
     test = self

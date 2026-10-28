@@ -183,11 +183,12 @@ def make_session(monkeypatch, request, profile, camera):
   monkeypatch.setattr(runtime_app, 'ui_state', NS(params=object(), CP=None, sm={}))
   monkeypatch.delenv('SP_ONROAD_VISUAL_PREVIEW', raising=False)
   def view(*_, camera_layer, **__):
-    return NS(camera_layer=camera_layer, onroad=NS(unified_speed=NS(source_bounds=Mock()), compact_sidebar=NS()))
+    return NS(camera_layer=camera_layer, onroad=NS(unified_speed=NS(source_bounds=Mock()), compact_sidebar=NS(), jetlink_status=Mock()))
   monkeypatch.setattr(runtime_app, 'ShellView', view)
   session = runtime_app.StarShellSession(profile, camera)
-  if receiver := session._projection_bookmarks:
-    request.addfinalizer(receiver.close)
+  for owner in (session._projection_bookmarks, session._projection_slc, session.onroad_map, session.onroad_jetlink):
+    if owner is not None:
+      request.addfinalizer(owner.close)
   return session
 
 
@@ -254,6 +255,21 @@ def test_large_camera_paint_is_unchanged(monkeypatch, request):
   assert kwargs['camera_view'] == state.appearance.camera_view
   assert kwargs['reverse_driver'] == state.reverse_driver_camera
   assert 'paint' not in kwargs
+
+
+@pytest.mark.parametrize('profile', [runtime_app.Profile.LARGE, runtime_app.Profile.COMPACT])
+def test_shell_wires_native_gpu_status_layer(monkeypatch, request, profile):
+  camera = Mock()
+  box = object()
+  # Night Star: the 3X shell fits the GPU icon under the steering wheel (onroad_large_widgets.model_source_box)
+  monkeypatch.setattr('openpilot.starpilot.ui.onroad_large_widgets.model_source_box', lambda _rect, _state: box)
+  session = make_session(monkeypatch, request, profile, camera)
+  rect, state = rl.Rectangle(30, 30, 2100, 1020), Mock()
+  session.view.onroad.extra_overlays(rect, state)
+  if profile == runtime_app.Profile.COMPACT:
+    camera.render_model_source_layer.assert_called_once_with(rect, show_long_indicator=None)
+  else:
+    camera.render_model_source_layer.assert_called_once_with(rect, box)
 
 
 @pytest.mark.parametrize('choice', list(runtime_app.CameraViewChoice))

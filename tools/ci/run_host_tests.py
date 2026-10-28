@@ -12,11 +12,15 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[2]
 RUNNER = ROOT / 'tools/test_runner.py'
-UI_PYTEST_FILES = (
+EXTRA_PYTEST_FILES = (
+  'openpilot/system/tests/test_sentry.py',
   'openpilot/system/ui/lib/tests/test_text_caches.py',
   'openpilot/system/ui/widgets/tests/test_label_cache.py',
   'openpilot/selfdrive/ui/tests/test_onboarding_textures.py',
 )
+
+# Public compatibility list also used by the local test command.
+UI_PYTEST_FILES = EXTRA_PYTEST_FILES
 
 
 def pytest_files(root=ROOT):
@@ -28,7 +32,7 @@ def pytest_files(root=ROOT):
            (isinstance(node, ast.ClassDef) and node.name.startswith('Test') and not node.bases)
            for node in module.body):
       files.append(path.relative_to(root).as_posix())
-  return files + [path for path in UI_PYTEST_FILES if (root / path).is_file()]
+  return files + [path for path in EXTRA_PYTEST_FILES if (root / path).is_file()]
 
 
 def main(arguments=None):
@@ -50,7 +54,13 @@ def main(arguments=None):
       environment.pop('PYTEST_ADDOPTS', None)
       environment.pop('PYTEST_PLUGINS', None)
       environment['PYTEST_DISABLE_PLUGIN_AUTOLOAD'] = '1'
-    command = ([sys.executable, '-m', 'pytest', '-q', '--import-mode=importlib', *arguments[1:], *files] if pytest_mode
+    diagnostics = environment.get('STARPILOT_TEST_DIAGNOSTICS')
+    evidence = []
+    if pytest_mode and diagnostics:
+      directory = Path(diagnostics).resolve()
+      directory.mkdir(parents=True, exist_ok=True)
+      evidence = ['-p', 'tools.ci.pytest_progress', '--junitxml=' + str(directory / 'pytest.xml')]
+    command = ([sys.executable, '-m', 'pytest', '-q', '--import-mode=importlib', *evidence, *arguments[1:], *files] if pytest_mode
                else [sys.executable, str(RUNNER), *arguments])
     result = subprocess.run(command, cwd=ROOT, env=environment, check=False)
     return result.returncode if result.returncode >= 0 else 128 - result.returncode

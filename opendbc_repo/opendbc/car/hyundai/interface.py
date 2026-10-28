@@ -46,8 +46,9 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.hyundai.radar_hda1_startup import required as radar_hda1_required
     from opendbc.car.hyundai.radar_hda2_startup import required as radar_hda2_required
     from opendbc.car.hyundai.generic_hda2_startup import required as generic_hda2_required
-    return (generic_hda2_required(cp) or radar_hda2_required(cp) or radar_hda1_required(cp) or ordinary_classic_required(cp) or pe_long_required(cp) or
-            legacy_required(cp) or blended_required(cp) or required(cp) or
+    from opendbc.car.hyundai.gv60_startup import required as gv60_required
+    return (gv60_required(cp) or generic_hda2_required(cp) or radar_hda2_required(cp) or radar_hda1_required(cp) or ordinary_classic_required(cp) or
+            pe_long_required(cp) or legacy_required(cp) or blended_required(cp) or required(cp) or
             ev6_required(cp) or gv70_required(cp) or ev9_required(cp) or torque_ev_required(cp))
 
   @staticmethod
@@ -74,10 +75,10 @@ class CarInterface(CarInterfaceBase):
     if gv70_required(cp):
       return GV70Startup(cp, callbacks) if requested else None
     from opendbc.car.hyundai.ev9_longitudinal import candidate as ev9_candidate, qualified as ev9_qualified
-    from opendbc.car.hyundai.ev9_startup import EV9Startup
+    from opendbc.car.hyundai.ev9_pending_startup import EV9PendingStartup
     ev9_cp = ev9_candidate(cp, enabled=requested, is_release=False)
     if ev9_qualified(ev9_cp):
-      return EV9Startup(ev9_cp, callbacks, stock_cp=cp) if requested else None
+      return EV9PendingStartup(ev9_cp, callbacks, stock_cp=cp) if requested else None
     from opendbc.car.hyundai.torque_ev_startup import candidate as torque_ev_candidate, TorqueEVStartup
     torque_cp = torque_ev_candidate(cp, requested=requested, is_release=False)
     if torque_cp is not None:
@@ -88,6 +89,9 @@ class CarInterface(CarInterfaceBase):
     from opendbc.car.hyundai.radar_hda2_startup import RadarHDA2Startup, required as radar_hda2_required
     if radar_hda2_required(cp):
       return RadarHDA2Startup(cp, callbacks) if requested else None
+    from opendbc.car.hyundai.gv60_startup import GV60Startup, required as gv60_required
+    if gv60_required(cp):
+      return GV60Startup(cp, callbacks) if requested else None
     from opendbc.car.hyundai.generic_hda2_startup import GenericHDA2Startup, required as generic_hda2_required
     if generic_hda2_required(cp):
       return GenericHDA2Startup(cp, callbacks) if requested else None
@@ -368,9 +372,16 @@ class CarInterface(CarInterfaceBase):
       ret.pcmCruise = True
       ret.alphaLongitudinalAvailable = not is_release and topology_owned(ret)
 
+    from opendbc.car.hyundai.gv60_startup import select_profile as gv60_select_profile
+    gv60_select_profile(ret, is_release=is_release)
+
     return ret
 
   def update(self, can_packets):
+    recovery = getattr(getattr(self, 'CC', None), 'angle_tx_recovery', None)
+    if recovery is not None:
+      can_packets = list(can_packets)
+      recovery.observe(can_packets, self.CC.frame)
     if (self.CS.pe_ready is not None or self.CS.gv70_camera_lead is not None or self.CS.ev9_camera_lead is not None or
         self.CS.ioniq6_camera_lead is not None or self.CS.torque_ev_camera_lead is not None or self.CS.forte_lkas_sources is not None):
       # This isolated optional parser must never join required controls health.

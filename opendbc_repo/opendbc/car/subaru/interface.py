@@ -1,3 +1,5 @@
+import time
+
 from opendbc.car import get_safety_config, structs, uds
 from opendbc.car.disable_ecu import disable_ecu
 from opendbc.car.interfaces import CarInterfaceBase
@@ -5,12 +7,39 @@ from opendbc.car.subaru.carcontroller import CarController
 from opendbc.car.subaru.carstate import CarState
 from opendbc.car.subaru.values import CAR, GLOBAL_ES_ADDR, CanBus, SubaruFlags, SubaruSafetyFlags
 
-GEN2_ANGLE_PORTS = frozenset((CAR.SUBARU_CROSSTREK_2025, CAR.SUBARU_LEGACY_2025, CAR.SUBARU_ASCENT_2023))
+GEN2_ANGLE_PORTS = frozenset((CAR.SUBARU_CROSSTREK_2025, CAR.SUBARU_LEGACY_2025, CAR.SUBARU_ASCENT_2023, CAR.SUBARU_FORESTER_2022, CAR.SUBARU_OUTBACK_2023))
 
 
 class CarInterface(CarInterfaceBase):
   CarState = CarState
   CarController = CarController
+
+  def update(self, can_packets):
+    source = self.CS.startup_sources
+    if source is not None and self.CC.stop_start is not None and not self.CC.stop_start.done:
+      can_packets = list(can_packets)
+      mono_ns = time.monotonic_ns()
+      boot_ns = time.clock_gettime_ns(getattr(time, 'CLOCK_BOOTTIME', time.CLOCK_MONOTONIC))
+      if time.monotonic_ns() - mono_ns <= 1_000_000:
+        source.observe(can_packets, boot_ns=boot_ns, mono_ns=mono_ns)
+      else:
+        source.frames.clear()
+        source.sequential.clear()
+    avh = self.CS.avh_sources
+    if avh is not None and not self.CC.avh_startup.done:
+      can_packets = list(can_packets)
+      mono_ns = time.monotonic_ns()
+      boot_ns = time.clock_gettime_ns(getattr(time, 'CLOCK_BOOTTIME', time.CLOCK_MONOTONIC))
+      if time.monotonic_ns() - mono_ns <= 1_000_000:
+        avh.observe(can_packets, boot_ns=boot_ns, mono_ns=mono_ns)
+      else:
+        avh.blocked = True
+    result = super().update(can_packets)
+    from opendbc.car.subaru.sng import selected
+    if selected(self.CP):
+      from opendbc.car.subaru.sng_source import capture
+      capture(self, can_packets)
+    return result
 
   @staticmethod
   def _get_params(ret: structs.CarParams, candidate: CAR, fingerprint, car_fw, alpha_long, is_release, docs) -> structs.CarParams:
@@ -43,8 +72,10 @@ class CarInterface(CarInterfaceBase):
         ret.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.GEN2.value
       if candidate in GEN2_ANGLE_PORTS:
         ret.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.LKAS_ANGLE.value
-        if candidate in (CAR.SUBARU_LEGACY_2025, CAR.SUBARU_ASCENT_2023):
+        if candidate in (CAR.SUBARU_LEGACY_2025, CAR.SUBARU_ASCENT_2023, CAR.SUBARU_OUTBACK_2023):
           ret.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.FIXED_ANGLE_LIMITS.value
+        if candidate == CAR.SUBARU_OUTBACK_2023:
+          ret.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.D_PLATFORM.value
         if candidate == CAR.SUBARU_ASCENT_2023:
           ret.safetyConfigs[0].safetyParam |= SubaruSafetyFlags.ANGLE_MAIN_BUS.value
           if ret.flags & SubaruFlags.ASCENT_LKAS_ALERT:

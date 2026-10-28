@@ -58,6 +58,7 @@ class ToyotaSafetyFlags(IntFlag):
   SECOC = (8 << 8)
   LONG_FILTER = (16 << 8)
   GAS_INTERCEPTOR = (32 << 8)
+  ALT_CRUISE = (64 << 8)  # Exact Lexus IS DSU MAIN profile
   RAV4H_FILTER_PROFILE = (128 << 8)  # Exact smartDSU owner; bit14 remains reserved for ALT_CRUISE
 
 
@@ -81,7 +82,9 @@ class ToyotaFlags(IntFlag):
   RAISED_ACCEL_LIMIT = 1024
   SECOC = 2048
   AUTO_BRAKE_HOLD = 4096
+  RADAR_CAN_FILTER = 1 << 18  # Exact radar adapter; includes four-byte 2FF, distinct from legacy SDSU status
   GAS_INTERCEPTOR = 1 << 17  # Exact paired pedal owner
+  DSU_BYPASS = 1 << 19  # Camera-bus DSU adapter; independent of smartDSU/filter
   ZSS = 1 << 16  # Detected Prius secondary steering sensor; host-only, no safetyParam allocation
 
   # deprecated flags
@@ -180,7 +183,7 @@ class CAR(Platforms):
       ToyotaCarDocs("Toyota Camry Hybrid 2018-20", video="https://www.youtube.com/watch?v=Q2DYY0AWKgk"),
     ],
     CarSpecs(mass=3400. * CV.LB_TO_KG, wheelbase=2.82448, steerRatio=13.7, tireStiffnessFactor=0.7933),
-    {Bus.pt: 'toyota_nodsu_pt_generated'},
+    {Bus.pt: 'toyota_nodsu_pt_generated', Bus.radar: 'toyota_radar_dsu_tssp'},
     flags=ToyotaFlags.NO_DSU,
   )
   TOYOTA_CAMRY_TSS2 = ToyotaTSS2PlatformConfig( # TSS 2.5

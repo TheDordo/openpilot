@@ -5,7 +5,12 @@ import { requestJson } from "./startup.js"
 import { GxNotice } from "./notice.js"
 import { connectionError } from "./polling.js"
 import { BluetoothDeviceList } from "./bluetooth-devices.js"
+import { BluetoothNotice, bluetoothConnection } from "./bluetooth-notice.js"
 import { GalaxySettingRow, switchRow } from "./galaxy-setting-row.js"
+
+export function uploadTimeout(bytes) {
+  return Math.max(180000, Math.ceil(bytes / (64 * 1024)) * 1000)
+}
 
 export function uploadPackage(path, options, progress, makeRequest = () => new XMLHttpRequest()) {
   return new Promise((resolve, reject) => {
@@ -20,7 +25,7 @@ export function uploadPackage(path, options, progress, makeRequest = () => new X
     }
     xhr.open("POST", path)
     xhr.withCredentials = true
-    xhr.timeout = 180000
+    xhr.timeout = options.timeout ?? uploadTimeout(options.body?.size || 0)
     xhr.setRequestHeader("Content-Type", "application/octet-stream")
     xhr.upload.onprogress = (event) => {
       if (!settled && event.lengthComputable) progress({ loaded: event.loaded, total: event.total })
@@ -39,6 +44,28 @@ export function uploadPackage(path, options, progress, makeRequest = () => new X
 }
 
 const ADDRESS = /^(?:[0-9A-F]{2}:){5}[0-9A-F]{2}$/
+const HEAD_UNIT_APPS = { headunitpad: "HeadunitPad", openheadunit: "Open Headunit" }
+const HOTSPOT_LINK = `<a class="gx-link" href="#/galaxy">Galaxy Wi-Fi Hotspot</a>`
+const APP_SETUP = `
+  <div v-if="app === 'HeadunitPad'" class="gx-note" role="note">
+    <strong>HeadunitPad setup (iPad)</strong>
+    <ol>
+      <li>Install <a class="gx-link" href="https://github.com/andyching168/HeadunitPad" target="_blank" rel="noopener noreferrer">HeadunitPad from GitHub</a> on the iPad.</li>
+      <li>Put the iPad on the same Wi-Fi as the comma, or turn on the ${HOTSPOT_LINK} and join its TheGalaxy network.</li>
+      <li>In HeadunitPad, choose Headunit Server or Auto mode, landscape, at 800x480, 1280x720 or 1920x1080.</li>
+      <li>Tap Connect here, then open HeadunitPad.</li>
+    </ol>
+  </div>
+  <div v-else-if="app === 'Open Headunit'" class="gx-note" role="note">
+    <strong>Open Headunit setup (Android tablet)</strong>
+    <ol>
+      <li>Install <a class="gx-link" href="https://github.com/andreknieriem/open-headunit/releases" target="_blank" rel="noopener noreferrer">Open Headunit from GitHub</a> on the tablet.</li>
+      <li>Put the tablet on the same Wi-Fi as the comma, or turn on the ${HOTSPOT_LINK} and join its TheGalaxy network.</li>
+      <li>In Open Headunit Settings, add WiFi to Connection mode. Under Wireless Connection, set Wireless Mode to Headunit Server and Server Mode to Auto.</li>
+      <li>Set Resolution to 480p, 720p or 1080p and Video Codec to H.264 or Auto.</li>
+      <li>Tap Connect here, then tap the WiFi button in Open Headunit.</li>
+    </ol>
+  </div>`
 const PROMPT = new Set(["pin", "passkey", "confirmation", "authorization", "display_pin", "display_passkey"])
 
 export function validPromptInput(prompt, value) {
@@ -288,13 +315,15 @@ export class AndroidAutoFeed {
     }
     this.uploadProgress = { loaded: 0, total: file.size }
     const generation = this.generation + 1
-    const transport = (path, options) => this.uploader(path, options, (progress) => {
+    // Slow tunnel links need longer than three minutes for large packages.
+    const timeout = uploadTimeout(file.size)
+    const transport = (path, options) => this.uploader(path, { ...options, timeout }, (progress) => {
       if (this.active && generation === this.generation) { this.uploadProgress = progress; this.emit() }
     })
     const result = await this.request("./api/android-auto/upload", {
       method: "POST",
       headers: { "Content-Type": "application/octet-stream" }, body: file
-    }, 180000, transport)
+    }, timeout, transport)
     this.uploadProgress = null
     this.emit()
     if (result === null) return false
@@ -413,12 +442,13 @@ export function installChecks(job, locale = undefined) {
 }
 
 export const AndroidAutoPage = {
-  components: { GxState, GxIconButton, GxNotice, GxDialog, GalaxySettingRow },
+  components: { GxState, GxIconButton, GxNotice, BluetoothNotice, GxDialog, GalaxySettingRow },
   props: {
     mode: { type: String, required: true }, localAccess: { type: Boolean, required: true },
     unauthorized: { type: Function, required: true }
   },
   data: () => ({
+    bluetooth: bluetoothConnection(),
     setup: null, pairing: null, selected: null, runtime: null, receivers: [], endReason: "", busy: false, error: "",
     pairValue: "", packageFile: null, uploadProgress: null, installOpen: false, removeOpen: false, installAttempted: false, installBaseline: null,
     downloadStarted: false, packageMagicError: "", packageChecking: false, packageSelection: 0,
@@ -455,11 +485,19 @@ export const AndroidAutoPage = {
     supportReady() { return !!(this.setup?.enabled && this.setup.identity.installed) },
     // Returning drivers see a status card; the setup steps fold away below it.
     wired() { return this.runtime?.connection === "wired" },
-    connectionName() { return this.wired ? "car" : this.selected?.name || "car" },
-    setupDone() { return !!(this.supportReady && (this.selected || this.wired) && !this.pairing?.active) },
+    app() { return HEAD_UNIT_APPS[this.runtime?.connection] || "" },
+    connectionName() { return this.app === "HeadunitPad" ? "iPad" : this.app ? "tablet" : this.wired ? "car" : this.selected?.name || "car" },
+    setupDone() { return !!(this.supportReady && (this.selected || this.wired || this.app) && !this.pairing?.active) },
     wiredRow() {
       const detail = "Project over a USB cable from the car to the comma’s USB-C port instead of Bluetooth and Wi-Fi."
       return switchRow("Wired USB Connection", this.wired, detail + (this.runtime?.wired_blocked ? ` ${this.runtime.wired_blocked}.` : ""))
+    },
+    appRow() {
+      return { label: "App", value: this.app || "Off", choices: ["Off", ...Object.values(HEAD_UNIT_APPS)], available: true, action: true,
+        reason: "Project to a tablet app on the same Wi-Fi as the comma or the Galaxy Wi-Fi Hotspot instead of the car." }
+    },
+    appDisabled() {
+      return !this.setup?.enabled || !this.setup.parked || !!this.pairing?.active || !!this.runtime?.running
     },
     wiredDisabled() {
       return !this.setup?.enabled || !this.setup.parked || !!this.pairing?.active || !!this.runtime?.running ||
@@ -484,6 +522,7 @@ export const AndroidAutoPage = {
       return this.packageMagicError
     },
     uploadReason() {
+      if (this.bluetooth) return "Package uploads are not available over Bluetooth. Connect using Galaxy Wi-Fi or LAN."
       if (!this.packageFile) return "Choose your Android Auto package."
       if (this.packageError) return this.packageError
       if (this.packageChecking) return "Checking downloaded file…"
@@ -524,7 +563,7 @@ export const AndroidAutoPage = {
       return ""
     },
     connectReason() {
-      if (!this.selected && this.runtime?.connection !== "wired") return "Pair your car in step 2 first."
+      if (!this.selected && !this.wired && !this.app) return "Pair your car in step 2 first."
       if (!this.setup?.enabled) return "Turn on Android Auto Support in step 1."
       if (!this.setup.serviceReady) return "Waiting for the Android Auto service to start."
       if (this.pairing?.active) return "Finish or cancel pairing first."
@@ -541,6 +580,10 @@ export const AndroidAutoPage = {
   },
   methods: {
     switchRow,
+    saveApp(index, value) {
+      const connection = Object.keys(HEAD_UNIT_APPS).find(key => HEAD_UNIT_APPS[key] === value) || "wireless"
+      return this.control("connection", { connection })
+    },
     async begin() {
       await this.feed.start()
       if (this.setup?.enabled && this.setup.serviceReady && !this.pairing?.active) this.loadReceivers()
@@ -649,7 +692,7 @@ export const AndroidAutoPage = {
         <h2>Android Auto</h2>
         <p>Show the StarPilot driving view on your car’s screen. Set up support, {{ wired ? 'plug in your car' : 'pair your car' }}, then connect.</p>
       </header>
-      <GxNotice tone="warn" v-if="!wired">Android Auto uses the comma’s Wi-Fi to project to your car and disconnects it from your current Wi-Fi network. Use the Galaxy hotspot for local access during projection. Remote Galaxy access requires Internet on the comma.</GxNotice>
+      <GxNotice tone="warn" v-if="!wired && !app">Android Auto uses the comma’s Wi-Fi to project to your car and disconnects it from your current Wi-Fi network. Use the Galaxy hotspot for local access during projection. Remote Galaxy access requires Internet on the comma.</GxNotice>
       <GxNotice tone="danger" v-if="error && setup">{{ error }}</GxNotice>
       <GxNotice v-if="!setup" :busy="!error" :tone="error ? 'danger' : 'info'">{{ error || "Checking Android Auto setup… Reconnecting automatically…" }}</GxNotice>
       <section v-if="setup && setupDone" class="gx-card gx-aa-step gx-aa-home" aria-labelledby="gx-aa-home-title">
@@ -667,6 +710,8 @@ export const AndroidAutoPage = {
             :save-value="(index, value) => control('auto_connect', { enabled: value === 'On' })" />
           <GalaxySettingRow :row="wiredRow" :index="0" :busy="busy" :disabled="wiredDisabled"
             :save-value="(index, value) => control('connection', { connection: value === 'On' ? 'wired' : 'wireless' })" />
+          <GalaxySettingRow :row="appRow" :index="0" :busy="busy" :disabled="appDisabled" :save-value="saveApp" />
+          ${APP_SETUP}
           <div class="gx-actions">
             <a class="gx-btn gx-btn--tonal" href="#/theme_maker/android_auto"><i class="bi bi-layout-text-window" aria-hidden="true"></i> Customize Layout</a>
             <button type="button" class="gx-btn gx-btn--tonal" :aria-expanded="showSteps" aria-controls="gx-aa-steps" @click="showSteps = !showSteps">
@@ -678,7 +723,7 @@ export const AndroidAutoPage = {
         <li class="gx-card gx-aa-step" :class="{ 'gx-aa-step--done': supportReady }">
           <div class="gx-aa-step__head">
             <span class="gx-aa-step__num" aria-hidden="true"><i v-if="supportReady" class="bi bi-check-lg"></i><template v-else>1</template></span>
-            <div><h3>Android Auto Support</h3><p>The one-time setup that lets your comma talk to your car.</p></div>
+            <div><h3>Android Auto Support</h3><p>Turn on Android Auto and install support. Wireless pairing also needs Bluetooth on; Galaxy will offer to enable it.</p></div>
           </div>
           <div class="gx-aa-step__body">
             <p v-if="!setup.installReady" class="gx-aa-pill gx-aa-pill--expired" role="status">Not available on this build — the Android Auto display and encoder are missing.</p>
@@ -695,6 +740,8 @@ export const AndroidAutoPage = {
               </div>
               <GalaxySettingRow :row="switchRow('Android Auto', setup.enabled, 'Turn off to stop connecting to your car. Your setup and paired car stay saved.')"
                 :index="0" :busy="busy" :disabled="enableOpen" :save-value="(index, value) => setEnabled(value === 'On')" />
+              <div v-if="!setup.bluetoothEnabled"><p class="gx-note">Bluetooth is off. Turn on Android Auto to enable it when prompted, or use Bluetooth under Tools.</p>
+                <a class="gx-btn gx-btn--tonal" href="#/bluetooth">Open Bluetooth</a></div>
               <p v-if="setup.import?.state === 'running' && !installOpen" class="gx-note" role="status">Checking your package…</p>
             </template>
             <details class="gx-aa-wiki"><summary>Stuck installing? Common problems</summary>
@@ -766,15 +813,16 @@ export const AndroidAutoPage = {
               <ul>
                 <li><strong>Keep this page open while pairing</strong> so the car’s PIN or code doesn’t time out.</li>
                 <li><strong>Cars with built-in wireless Android Auto:</strong> open the car’s phone pairing screen, then tap <strong>Find car</strong> above. Choose your car, then confirm the code on both screens.</li>
-                <li><strong>Wireless adapter</strong> (AAWireless, Motorola MA1, Carlinkit…): pair your car in <a href="#/bluetooth">Bluetooth</a> first so calls keep working, then put the adapter in pairing mode and pair it here. Adapter names often look like AndroidAuto-XXXX.</li>
+                <li><strong>Wireless adapter</strong> (AAWireless, Motorola MA1, Carlinkit…): pair your car in Bluetooth under Tools first so calls keep working, then put the adapter in pairing mode and pair it here. Adapter names often look like AndroidAuto-XXXX.</li>
               </ul>
               <p><strong>Start fresh:</strong></p>
               <ol>
-                <li>Forget the car on the comma: <a href="#/bluetooth">Bluetooth</a> → Forget.</li>
+                <li>Forget the car on the comma: Bluetooth under Tools → Forget.</li>
                 <li>Delete the comma from the car’s Bluetooth list.</li>
                 <li>Turn the car off and on (or unplug the adapter for 5 seconds).</li>
                 <li>Pair again here.</li>
               </ol>
+              <a class="gx-btn gx-btn--tonal" href="#/bluetooth">Open Bluetooth</a>
             </details>
           </div>
         </li>
@@ -796,10 +844,12 @@ export const AndroidAutoPage = {
               :save-value="(index, value) => control('auto_connect', { enabled: value === 'On' })" />
             <GalaxySettingRow :row="wiredRow" :index="0" :busy="busy" :disabled="wiredDisabled"
               :save-value="(index, value) => control('connection', { connection: value === 'On' ? 'wired' : 'wireless' })" />
+            <GalaxySettingRow :row="appRow" :index="0" :busy="busy" :disabled="appDisabled" :save-value="saveApp" />
+            ${APP_SETUP}
             <p v-if="runtime?.companion_name" class="gx-note">Car: {{ runtime.companion_name }}</p>
             <details class="gx-aa-wiki"><summary>Stuck connecting? Wi-Fi and screen troubleshooting</summary>
               <ul>
-                <li v-if="!wired"><strong>How it connects:</strong> after Bluetooth, the car (or adapter) creates its own hidden 5 GHz Wi-Fi network and tells the comma how to join. The picture streams over that Wi-Fi.</li>
+                <li v-if="!wired && !app"><strong>How it connects:</strong> after Bluetooth, the car (or adapter) creates its own hidden 5 GHz Wi-Fi network and tells the comma how to join. The picture streams over that Wi-Fi.</li>
                 <li><strong>First connection:</strong> stay in Park or offroad mode, and keep the car’s screen on.</li>
                 <li><strong>Black or frozen screen:</strong> tap Disconnect, wait a few seconds, then connect again. If it keeps happening, turn the car off and on.</li>
                 <li><strong>Car says the phone isn’t compatible:</strong> make sure wireless Android Auto (sometimes called “smartphone connection”) is turned on in the car’s settings, and that step 1 shows Ready.</li>
@@ -815,6 +865,7 @@ export const AndroidAutoPage = {
             <div><h3>Customize Your Dashboard</h3><p>Once connected, customize your dashboard setup.</p></div>
           </div>
           <div class="gx-aa-step__body">
+            <a class="gx-btn gx-btn--tonal gx-aa-cta" href="#/android-auto/audio"><i class="bi bi-spotify" aria-hidden="true"></i> Spotify and Phone Audio</a>
             <a class="gx-btn gx-btn--tonal gx-aa-cta" href="#/theme_maker/android_auto">Customize Layout</a>
             <a class="gx-btn gx-btn--tonal gx-aa-cta" href="#/navigation/maps"><i class="bi bi-map" aria-hidden="true"></i> Offline Road Maps</a>
             <p class="gx-note">Save road lines for the map overlay so it keeps drawing roads with no signal.</p>
@@ -822,127 +873,16 @@ export const AndroidAutoPage = {
         </li>
       </ol>
 
-      <section v-if="setup" class="gx-card gx-aa-faq" aria-labelledby="gx-aa-faq-title">
-        <div class="gx-aa-faq__head">
-          <h3 id="gx-aa-faq-title">FAQ</h3>
-          <p>Quick answers to the problems people run into most. Tap a question to open it.</p>
+      <section v-if="setup" class="gx-card gx-aa-step" aria-labelledby="gx-aa-help-title">
+        <div class="gx-aa-step__head">
+          <span class="gx-aa-step__num" aria-hidden="true"><i class="bi bi-question-circle"></i></span>
+          <div><h3 id="gx-aa-help-title">Still having trouble?</h3><p>Our wiki has detailed help for pairing, connection status, other phones, wireless adapters, and screen problems.</p></div>
         </div>
-
-        <h4>Getting connected</h4>
-        <details class="gx-aa-wiki"><summary>It won’t connect at all. Where do I start?</summary>
-          <p>Go down this list. Most problems are one of these:</p>
-          <ul>
-            <li><strong>Step 1 says Ready.</strong> If it says Expired or Needs reinstalling, fix that first.</li>
-            <li><strong>Step 2 shows your car</strong> with a check mark next to it.</li>
-            <li><strong>The car is on</strong> and its screen is awake, not just the accessory power.</li>
-            <li><strong>Wireless Android Auto is turned on in the car’s settings.</strong> Some cars call it “smartphone connection” or “phone projection.”</li>
-            <li><strong>Bluetooth is on</strong> in the comma’s <a href="#/bluetooth">Bluetooth</a> page.</li>
-            <li><strong>No phone is taking over.</strong> See “It won’t connect automatically when other phones are paired” below.</li>
-          </ul>
-          <p>Still nothing? Look at the status line in step 3. The next question explains what it means.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>What do the status messages in step 3 mean?</summary>
-          <p>They show how far the comma got. Find the last one you saw:</p>
-          <ul>
-            <li><strong>Connecting to car / Finding Android Auto:</strong> the comma is reaching the car over Bluetooth. Make sure the car is on and was paired in step 2.</li>
-            <li><strong>Starting wireless setup / Waiting for car:</strong> the comma asked the car to start Android Auto. If it stops here, wireless Android Auto is probably turned off in the car, or the car is busy with your phone.</li>
-            <li><strong>Getting car Wi‑Fi / Joining car Wi‑Fi:</strong> the car is sharing its private Wi‑Fi with the comma. If it keeps failing here, try turning the car off and on.</li>
-            <li><strong>Authenticating:</strong> the car is checking the Android Auto certificate. If it fails here, updating the package in step 1 may help.</li>
-            <li><strong>Projecting:</strong> everything is working.</li>
-            <li><strong>Car showing its own screen:</strong> the car switched to one of its own screens, often because the radio, map, or another car screen was opened. Tapping the Android Auto icon on the car’s screen usually brings it back.</li>
-            <li><strong>Retrying:</strong> something interrupted the connection. The comma tries again by itself, so give it a moment.</li>
-          </ul>
-        </details>
-        <details class="gx-aa-wiki"><summary>It won’t connect automatically when other phones are paired to my car</summary>
-          <p>When you start the car, it reconnects to the phones it knows, usually starting with its favorite or the one used most recently. Most cars run Android Auto on only one device at a time, so whichever device gets there first usually wins. If that’s a phone, the comma may have to wait.</p>
-          <p>The comma keeps asking about every 30 seconds while you drive, so it can usually take over within about half a minute once the screen is free.</p>
-          <p><strong>Things that may help the car pick the comma:</strong></p>
-          <ol>
-            <li><strong>Make the comma the car’s preferred device.</strong> Many cars have a setting for this in the phone or Bluetooth menu, called something like “Preferred device,” “Priority phone,” or “Primary device.”</li>
-            <li><strong>Turn off wireless Android Auto on the phones.</strong> On each phone paired to the car, including other drivers’ phones, open <strong>Settings → Android Auto</strong> and turn off wireless Android Auto for this car, or remove the car from its list of connected cars.</li>
-            <li><strong>Make room for the comma.</strong> Some cars only keep two phones connected at once. If two are already connected, there may be no room left for the comma. Turn off Bluetooth on one phone, or delete old phones the car no longer needs.</li>
-            <li><strong>Using a wireless adapter?</strong> Usually the adapter chooses which phone to use, not the car. Try removing the adapter from your phone’s Bluetooth list, or setting the comma as the main device in the adapter’s app.</li>
-          </ol>
-          <p>Your phone may be able to stay connected for music. See “Can I still take calls and play music from my phone?” below.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>Can I still take calls and play music from my phone?</summary>
-          <p>It depends on your car. The comma never handles calls or audio itself, but to show StarPilot it connects to the car as a phone.</p>
-          <p>Some cars treat the phone and Android Auto as one device. In those cars, choosing your real phone as the car’s phone can move Android Auto to that phone and disconnect the comma. Other cars may let both stay connected.</p>
-          <p><strong>If the comma disconnects when your phone connects, try this:</strong></p>
-          <ul>
-            <li><strong>For music:</strong> if your car lets you, connect your phone for <strong>audio only</strong> (sometimes called “media audio” or “music”) in the car’s Bluetooth device list, not as the phone. Then choose Bluetooth Audio as the car’s sound source.</li>
-            <li><strong>For a call:</strong> switch the car’s phone to your real phone. The comma will likely disconnect. When you switch back, it usually reconnects within about half a minute.</li>
-          </ul>
-          <p>The comma can’t pass calls through to your phone yet.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>Will this work with my car?</summary>
-          <p>It’s made for cars that have <strong>wireless Android Auto</strong> built in, though not every car has been tested. If your car only has wired Android Auto through a USB cable, a <strong>wireless adapter</strong> (AAWireless, Motorola MA1, Carlinkit, and similar) may work. A direct USB cable from the comma to the car is supported as Wired USB Connection, though it still needs testing on more cars.</p>
-          <p>Every car brand does things a little differently. If yours gives you trouble, a log from your car helps get it fixed. You can download one from <strong>Connection Logs</strong> at the bottom of this page.</p>
-        </details>
-
-        <h4>While driving</h4>
-        <details class="gx-aa-wiki"><summary>It connected, but the car screen is black or frozen</summary>
-          <p>The first picture can take up to about <strong>30 seconds</strong> while StarPilot gets its view ready, so wait a little first. If it’s still black:</p>
-          <ol>
-            <li>Tap <strong>Disconnect</strong> in step 3, wait a few seconds, then connect again.</li>
-            <li>If that doesn’t help, turn the car off, wait until its screen goes dark, and turn it back on.</li>
-          </ol>
-        </details>
-        <details class="gx-aa-wiki"><summary>It disconnects while I’m driving</summary>
-          <p>Short drops usually fix themselves. The comma reconnects on its own and step 3 shows <strong>Retrying</strong> in the meantime.</p>
-          <p>If it happens often, a phone may be taking the screen back. See “It won’t connect automatically when other phones are paired” above. If it keeps happening, download your <strong>Connection Logs</strong> at the bottom of this page so it can be looked at.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>Does it start by itself, or do I tap Connect every time?</summary>
-          <p>With <strong>Automatic Connection</strong> turned on, it tries to connect each time you start driving, so you usually don’t need to open this page.</p>
-          <ul>
-            <li>If you tap <strong>Disconnect</strong>, it stays off for the rest of that drive and starts again on your next one.</li>
-            <li>It usually ends by itself about a minute after you turn the car off.</li>
-          </ul>
-        </details>
-        <details class="gx-aa-wiki"><summary>Why are some buttons grayed out?</summary>
-          <p>Pairing, switching cars, and changing settings require <strong>Park</strong> or <strong>offroad mode</strong>. Turning Android Auto on or off, package uploads, package deletion, Connect, and Disconnect work on-road and off-road.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>Why did this page or my comma’s Wi‑Fi drop when it connected?</summary>
-          <p>Android Auto talks to the car over the car’s own private Wi‑Fi. While it’s connected, the comma uses its Wi‑Fi for the car instead of your home or hotspot Wi‑Fi, disconnecting Galaxy over that network.</p>
-          <p>Use the Galaxy hotspot for local access while Android Auto is connected. Without another Internet connection, remote Galaxy access is unavailable until your usual Wi‑Fi reconnects. The comma’s cell connection is not affected by Android Auto.</p>
-        </details>
-
-        <h4>Setup and upkeep</h4>
-        <details class="gx-aa-wiki"><summary>Step 1 says it expires soon, or that it expired</summary>
-          <p>Every version of the Android Auto app comes with a Google certificate that has an end date. When it gets close, step 1 shows an <strong>Update</strong> button. Download the newest version the same way you did the first time and install it.</p>
-          <p>It takes about two minutes, and your paired car and settings stay as they are.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>I have more than one car. How do I switch?</summary>
-          <p>Pair each car in step 2 with <strong>Pair another</strong>. All your paired cars appear in the list. Tap <strong>Use</strong> next to the one you’re driving. Disconnect first if Android Auto is running.</p>
-        </details>
-        <details class="gx-aa-wiki"><summary>Is my information private?</summary>
-          <p>Your extracted Android Auto identity stays on your comma. The app downloads straight to your phone or computer, and the copy you upload is deleted after import. Full connection logs stay on the comma until you download them. When parked and Android Auto is stopped, StarPilot may send connection errors.</p>
-        </details>
-
-        <h4>Wireless Dongle Woes</h4>
-        <details class="gx-aa-wiki"><summary>My AAWireless (or other wireless adapter) won’t connect</summary>
-          <p><strong>The comma needs to be paired to two things:</strong> the adapter <em>and</em> the car. The adapter shows Android Auto on the car’s screen. The car’s own Bluetooth connection is how StarPilot remembers which car you’re in.</p>
-          <p><strong>Do this while parked:</strong></p>
-          <ol>
-            <li><strong>Pair AAWireless</strong> and select it as the Android Auto receiver in Galaxy. Keep it selected.</li>
-            <li>Open <a href="#/bluetooth">Bluetooth</a> in Galaxy and <strong>pair the comma with the car’s actual Bluetooth entry</strong>, then tap <strong>Connect</strong>. If it’s already paired, just tap Connect.</li>
-            <li><strong>Retry Android Auto.</strong></li>
-          </ol>
-          <p><strong>Why connect the car in Galaxy?</strong> Connecting from Galaxy’s Bluetooth page saves the car as your companion car. Connecting from the car’s own menu doesn’t.</p>
-          <p><strong>Don’t switch the receiver to the car.</strong> AAWireless stays selected as the Android Auto receiver. The car is a separate hands-free connection.</p>
-        </details>
-
-        <h4>Still stuck?</h4>
-        <details class="gx-aa-wiki"><summary>How do I start over from scratch?</summary>
-          <ol>
-            <li>Remove the car on the comma: <a href="#/bluetooth">Bluetooth</a> → Forget.</li>
-            <li>Delete the comma from your car’s Bluetooth list.</li>
-            <li>Turn the car off and on, or unplug a wireless adapter for 5 seconds.</li>
-            <li>Pair again in step 2 with the car’s pairing screen open.</li>
-          </ol>
-        </details>
-        <div class="gx-driving__actions gx-actions">
-          <a class="gx-btn gx-btn--tonal" href="#/logs/android-auto"><i class="bi bi-journal-text"></i> Connection Logs</a>
+        <div class="gx-aa-step__body">
+          <div class="gx-driving__actions gx-actions">
+            <a class="gx-btn" href="https://wiki.firestar.link/exclusive/android-auto/" target="_blank" rel="noopener noreferrer">Read the Android Auto troubleshooting guide</a>
+            <a class="gx-btn gx-btn--tonal" href="#/logs/android-auto"><i class="bi bi-journal-text"></i> Connection Logs</a>
+          </div>
         </div>
       </section>
 
@@ -969,7 +909,9 @@ export const AndroidAutoPage = {
           <button type="button" class="gx-icon-btn" aria-label="Close" @click="closeInstall"><i class="bi bi-x-lg"></i></button>
         </div>
         <div class="gx-aa-sheet__body">
-          <div v-if="installState === 'done'" class="gx-message gx-aa-sheet__done">
+          <div v-if="bluetooth"><h3 id="gx-aa-install-title">Android Auto package installation</h3>
+            <BluetoothNotice feature="Android Auto package downloads and uploads" /></div>
+          <div v-else-if="installState === 'done'" class="gx-message gx-aa-sheet__done">
             <div class="gx-aa-done-badge"><i class="bi bi-check-lg" aria-hidden="true"></i></div>
             <h3 id="gx-aa-install-title">You’re all set</h3>
             <p class="gx-note">{{ expiry.label }}</p>
@@ -1062,9 +1004,9 @@ export const AndroidAutoPage = {
                   </ul>
                   <GxNotice v-if="installState === 'failed'" tone="danger">
                     <p>{{ problem }}</p>
-                    <button class="gx-btn gx-btn--tonal" @click="chooseAgain">Choose Another File</button>
+                    <template #actions><button class="gx-btn gx-btn--tonal" @click="chooseAgain">Choose Another File</button></template>
                   </GxNotice>
-                  <p v-if="error && installState === 'choose' && installAttempted" class="gx-aa-bad" role="alert">{{ error }}</p>
+                  <GxNotice v-if="error && installState === 'choose' && installAttempted" tone="danger">{{ error }}</GxNotice>
                 </div>
               </li>
             </ol>

@@ -17,6 +17,7 @@ from openpilot.starpilot.saved_document import commit_exact
 from openpilot.starpilot.ui.feature_settings_state import FeatureRow, FeatureSettingsRequest
 
 
+GUIDANCE = "lane_change:turn_signal_guidance"
 ENABLED = "lane_change:enabled"
 SPEED = "lane_change:speed"
 ONE = "lane_change:one"
@@ -39,7 +40,7 @@ def confirm_question(request: FeatureSettingsRequest) -> str:
     return "Turn off lane-change assistance? The current assistance cancels after the preference refresh."
   if request.key == AUTO and request.value == "Off":
     return "Turn off automatic lane changes? New automatic triggers stop after the preference refresh."
-  label = {ENABLED: "lane-change assistance", AUTO: "automatic lane changes", SPEED: "minimum lane-change speed",
+  label = {GUIDANCE: "turn signal guidance", ENABLED: "lane-change assistance", AUTO: "automatic lane changes", SPEED: "minimum lane-change speed",
            ONE: "one lane change per signal", PACE: "steering pace", DELAY: "signal delay",
            WIDTH: "minimum adjacent lane width", CLOSE: "Close lane-change gap", GAP: "lane-change following time",
            TURN: "Force turn desires", TURN_SPEED: "turn desire speed"}[request.key]
@@ -52,7 +53,7 @@ def confirm_question(request: FeatureSettingsRequest) -> str:
             "Changes apply after the current signal and maneuver end.")
   checks = ' Lane and blindspot checks remain required.' if request.key == AUTO and request.value == 'On' else ''
   return f"Set {label} to {value}? {timing}{checks}"
-KEYS = frozenset((ENABLED, SPEED, ONE, AUTO, DELAY, WIDTH, CLOSE, GAP, PACE, TURN, TURN_SPEED, RESET))
+KEYS = frozenset((GUIDANCE, ENABLED, SPEED, ONE, AUTO, DELAY, WIDTH, CLOSE, GAP, PACE, TURN, TURN_SPEED, RESET))
 
 
 def _unit_source(params) -> tuple[bytes | None, bool]:
@@ -166,6 +167,14 @@ class LaneChangeFeature:
                TURN: "On" if defaults.turn_desires else "Off", TURN_SPEED: str(round(defaults.turn_desire_speed_mps * multiplier, 3))}
     return [replace(row, default_value=targets.get(row.key)) for row in rows]
 
+  def guidance_row(self, parked):
+    saved = read_saved(self.params)
+    return FeatureRow(GUIDANCE, "Turn Signal Guidance", "On" if saved.policy.turn_signal_guidance else "Off",
+                      source=saved.raw, choices=("Off", "On"),
+                      available=saved.valid and saved.readable and self.capability() is not None and self.authority("lane_change"),
+                      reason="Use your turn signal to help the model choose a turning path at intersections.",
+                      vehicle_fingerprint=self.fingerprint(), capability=self.capability(), default_value="On")
+
   def _fresh(self, request: FeatureSettingsRequest) -> SavedLaneChange | None:
     if (not request.vehicle_fingerprint or self.fingerprint() != request.vehicle_fingerprint or
         request.capability is None or self.capability() != request.capability or not self.authority("lane_change")):
@@ -187,8 +196,9 @@ class LaneChangeFeature:
       return LaneChangePolicy() if not saved.valid and request.value == "confirm" else None
     if not saved.valid:
       return None
-    if request.key in (ENABLED, ONE, AUTO, CLOSE, TURN) and request.value in ("On", "Off"):
-      field = {ENABLED: "enabled", ONE: "one_per_signal", AUTO: "auto_lane_change", CLOSE: "close_gap", TURN: "turn_desires"}[request.key]
+    if request.key in (GUIDANCE, ENABLED, ONE, AUTO, CLOSE, TURN) and request.value in ("On", "Off"):
+      field = {GUIDANCE: "turn_signal_guidance", ENABLED: "enabled", ONE: "one_per_signal", AUTO: "auto_lane_change",
+               CLOSE: "close_gap", TURN: "turn_desires"}[request.key]
       return replace(saved.policy, **{field: request.value == "On"})
     if request.key == PACE:
       try:

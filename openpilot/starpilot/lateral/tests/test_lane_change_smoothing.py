@@ -15,7 +15,12 @@ def test_duration_document_roundtrip_and_previous_versions():
   old = to_value(LaneChangePolicy())
   old['version'] = 3
   old.pop('durationS')
-  assert decode(json.dumps(old).encode()).duration_s == LaneChangePolicy().duration_s
+  assert decode(json.dumps(old).encode()) is None  # A v3 document cannot contain a later field.
+  old.pop('turnSignalGuidance')
+  decoded = decode(json.dumps(old).encode())
+  assert decoded is not None
+  assert decoded.duration_s == LaneChangePolicy().duration_s
+  assert decoded.turn_signal_guidance == LaneChangePolicy().turn_signal_guidance
   for value in (2.9, 8.1, True, float('nan')):
     current = to_value(LaneChangePolicy()) | {'durationS': value}
     assert decode(json.dumps(current).encode()) is None

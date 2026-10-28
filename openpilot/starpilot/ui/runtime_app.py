@@ -43,7 +43,7 @@ from openpilot.starpilot.ui.pip_owner import FORMAT_PREFIX as PIP_FORMAT_PREFIX,
 from openpilot.starpilot.ui.pip_preferences import read_pip
 from openpilot.starpilot.ui.pip_render import PiPRenderer
 from openpilot.starpilot.ui.pip_sidecam import Signals, Rect
-from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, placement, widget_size
+from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, fit_to_road, placement, widget_size
 from openpilot.starpilot.ui.layout_preview_sidebar import SIDEBAR_WIDTH
 from openpilot.starpilot.ui.pip_warning import PiPWarningSource
 from openpilot.starpilot.spot_monitor.preferences import read_preferences as read_vasm_preferences
@@ -67,6 +67,7 @@ from openpilot.starpilot.ui.startup import slc_action_transport_enabled, validat
 from openpilot.starpilot.speed_limits.vision_gate import diagnostic_choice_enabled
 from openpilot.starpilot.ui.bluetooth_status import BluetoothStatusSource
 from openpilot.starpilot.ui.runtime_snapshot import RuntimeSnapshotAdapter, current_message, display_message
+from openpilot.starpilot.ui.runtime_software import deliver_software
 from openpilot.starpilot.ui.network_panel import NetworkPanelBridge
 from openpilot.starpilot.ui.slc_action_dispatch import SlcActionDispatcher
 from openpilot.starpilot.ui.onroad_state import AlertSize, BorderSignals, OnroadRequest, OnroadState, SlcUiRequest, is_personality_notice, is_lane_change_notice
@@ -87,14 +88,14 @@ from openpilot.starpilot.feature_runtime import enabled as feature_enabled
 from openpilot.starpilot.conditional_mode.preferences import PreferenceError, SavedPreferences, decode_preferences
 from openpilot.starpilot.conditional_mode.policy import ModeChoice
 from openpilot.starpilot.conditional_mode.ui_action import ConditionalUiActionOwner
-from openpilot.starpilot.ui.settings_state import compact_menu, Destination, SettingsAction, SettingsActionKind, SettingsState
+from openpilot.starpilot.ui.settings_state import Destination, SettingsAction, SettingsActionKind
 from openpilot.starpilot.ui.shell import ShellInput, ShellMode, ShellRequest, ShellSnapshot, ShellView
 from openpilot.starpilot.ui.software_state import DownloadLabel, SoftwareAction, SoftwareRequest
 from openpilot.starpilot.ui.toggles_state import Personality, ToggleKey, ToggleRequest
 from openpilot.system.ui.lib.application import MouseEvent, MousePos, gui_app
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.list_view import button_item, text_item
-from openpilot.system.ui.widgets.nav_widget import NavWidget
+from openpilot.starpilot.ui.compact_settings_page import StarCompactSettings
 
 NATIVE_SETTINGS_PANELS = (Destination.DEVICE, Destination.SOFTWARE, Destination.BLUETOOTH, Destination.TOGGLES, Destination.DEVELOPER)
 _FEATURE_SETTINGS_PANES = {
@@ -298,12 +299,19 @@ class StarShellSession:
         self._projection_slc = SlcActionReceiver()
       except OSError:
         pass  # Car-screen speed-limit taps stay unavailable without affecting the native UI.
+    self.onroad_map = self.onroad_jetlink = None
+    if profile == Profile.LARGE:
+      from openpilot.starpilot.ui.onroad_map_layer import NativeMapLayer
+      self.onroad_map = NativeMapLayer(self.fonts, ui_state)
+      self.view.onroad.map_layer = self.onroad_map.render
+      from openpilot.starpilot.ui.onroad_jetlink_layer import NativeJetlinkLayer
+      self.onroad_jetlink = NativeJetlinkLayer(self.view.onroad.jetlink_status, ui_state)
+      self.view.onroad.jetlink_status = self.onroad_jetlink
 
   def _favorite_authority(self, *, allow_personality_notice: bool = False) -> bool:
     if getattr(ui_state, "replay_clock", None) is not None:
       return False
     if getattr(self, "_projection_tap", False):
-      # Projected taps need live onroad state, regardless of this screen's page or visibility.
       return bool(ui_state.started and display_message(ui_state.sm, 'carState', time.monotonic_ns(),
                                                        after_frame=ui_state.started_frame) is not None)
     if self._mode != ShellMode.ONROAD:
@@ -655,11 +663,14 @@ class StarShellSession:
     if cp is None or not getattr(cp, "carFingerprint", ""):
       return False
     if group in ("lane_change", "conditional", "conditional_wheel", "switchback_wheel", "aol_wheel",
-                 "lane", "long", "toyota_cruise", "long_output", "slc", "torque", "aol", "vehicle"):
+                 "lane", "long", "toyota_cruise", "long_output", "slc", "torque", "aol", "vehicle", "toyota_radar"):
       if not preference_authority:
         return False
       if group == "toyota_cruise":
         from openpilot.starpilot.controllers.toyota_cruise import capability
+        return capability(cp) is not None
+      if group == "toyota_radar":
+        from openpilot.starpilot.car.toyota.radar_preferences import capability
         return capability(cp) is not None
       if group == "vehicle":
         from opendbc.car.toyota.interface import toyota_auto_hold_supported
@@ -1283,11 +1294,12 @@ class StarShellSession:
     snapshot = self.adapter.build(mode, self.selected, compact_y=self.compact_y,
                                   compact_scroll_x=self.compact_scroll_x, sidebar_expanded=self.sidebar_expanded,
                                   menu_only=self.profile == Profile.COMPACT and mode == ShellMode.SETTINGS,
-                                  onroad_view_only=mode == ShellMode.ONROAD)
+                                  onroad_view_only=mode == ShellMode.ONROAD, stopped_timer_profile=str(self.profile))
     if mode == ShellMode.ONROAD and self.profile == Profile.LARGE:
       width = getattr(self, '_onroad_page_width', 2160.0) - (SIDEBAR_WIDTH if snapshot.onroad.appearance.show_developer_sidebar else 0)
-      if snapshot.onroad.viewport_width != width:
-        snapshot = replace(snapshot, onroad=replace(snapshot.onroad, viewport_width=width))
+      fitted = fit_to_road(snapshot.onroad.customization, width)
+      if snapshot.onroad.viewport_width != width or fitted is not snapshot.onroad.customization:
+        snapshot = replace(snapshot, onroad=replace(snapshot.onroad, viewport_width=width, customization=fitted))
     if mode == ShellMode.HOME:
       now = time.monotonic()
       previous = getattr(self, "_home_model", None)
@@ -1309,7 +1321,7 @@ class StarShellSession:
       drive = self.drive_state.snapshot()
       availability = tuple(replace(item, available=item.destination in
                                    (Destination.TOGGLES, Destination.DEVICE, Destination.SOFTWARE,
-                                    Destination.DRIVING_MODEL, Destination.APPEARANCE, Destination.GALAXY,
+                                    Destination.DRIVING_MODEL, Destination.DRIVING_CONTROLS, Destination.APPEARANCE, Destination.GALAXY,
                                     Destination.NETWORK, Destination.BLUETOOTH, Destination.VEHICLE, Destination.DEVELOPER) or
                                    (item.destination == Destination.FORCE_DRIVE and drive["available"]) or
                                    snapshot.device.offroad and item.destination == Destination.PAIR)
@@ -1692,6 +1704,12 @@ class StarShellSession:
     self._favorite_claimed = False
 
   def close(self) -> None:
+    if layer := getattr(self, 'onroad_jetlink', None):
+      layer.close()
+      self.onroad_jetlink = None
+    if layer := getattr(self, 'onroad_map', None):
+      layer.close()
+      self.onroad_map = None
     if receiver := getattr(self, '_projection_bookmarks', None):
       receiver.close()
       self._projection_bookmarks = None
@@ -1772,49 +1790,6 @@ class StarShellPage(Widget):
       self.session.camera_owner._bookmark_icon.hide_event()
     self._press_pos = None
     self._dragged = False
-    super().hide_event()
-
-
-class StarCompactSettings(NavWidget):
-  def __init__(self, session: StarShellSession):
-    NavWidget.__init__(self)
-    self.session, self.mode = session, ShellMode.SETTINGS
-    from openpilot.system.ui.lib.scroll_panel2 import GuiScrollPanel2
-    self._panel = GuiScrollPanel2(horizontal=True)
-
-  def covers_camera(self, rect: rl.Rectangle) -> bool:
-    return bool(gui_app.get_active_widget() is self and self.enabled and self.is_visible and
-                not gui_app.mouse_events and not self.is_dismissing and self._drag_start_pos is None and
-                self._shown_callback is None and self._y_pos_filter.x == 0 and self._y_pos_filter.velocity.x == 0 and
-                self.rect.x == rect.x == 0 and self.rect.y == rect.y == 0 and
-                self.rect.width == rect.width == gui_app.width and self.rect.height == rect.height == gui_app.height)
-
-  def _update_state(self) -> None:
-    NavWidget._update_state(self)
-    target = -422 * round(-self._panel.get_offset() / 422)
-    # Project the pairing snapshot after rendering updates the panel offset.
-    paired = bool(self.session.adapter.ui_state.prime_state.is_paired())
-    self.session.compact_scroll_x = self._panel.update(self.rect, 20 + len(compact_menu(SettingsState(paired=paired))) * 422,
-                                                        snap_target=target)
-
-  def _render(self, rect) -> None:
-    self.session.render(self.mode, rect)
-
-  def _handle_mouse_event(self, mouse_event: MouseEvent) -> None:
-    NavWidget._handle_mouse_event(self, mouse_event)
-    if mouse_event.left_down and not mouse_event.left_pressed:
-      self.session.move(self.mode, mouse_event.pos.x - self.rect.x, mouse_event.pos.y - self.rect.y)
-    elif mouse_event.left_released and not rl.check_collision_point_rec(mouse_event.pos, self.rect):
-      self.session.cancel()
-
-  def _handle_mouse_press(self, mouse_pos: MousePos) -> None:
-    self.session.press(self.mode, mouse_pos.x - self.rect.x, mouse_pos.y - self.rect.y)
-
-  def _handle_mouse_release(self, mouse_pos: MousePos) -> None:
-    self.session.release(self.mode, mouse_pos.x - self.rect.x, mouse_pos.y - self.rect.y)
-
-  def hide_event(self) -> None:
-    self.session.cancel()
     super().hide_event()
 
 
@@ -1977,31 +1952,8 @@ class StarMainLayout(MainLayout):
     return True
 
   def _deliver_software(self, request: SoftwareAction) -> bool:
-    from openpilot.selfdrive.ui.layouts.settings.settings import PanelType
-    fresh = self.star.adapter.build(ShellMode.SETTINGS, Destination.SOFTWARE, now_ns=time.monotonic_ns()).software
-    if request.request not in fresh.available_actions:
-      return False
-    owner = self._panel_owner(PanelType.SOFTWARE)
-    if request.request in (SoftwareRequest.CHECK_FOR_UPDATES, SoftwareRequest.DOWNLOAD_UPDATE):
-      expected = DownloadLabel.DOWNLOAD if request.request == SoftwareRequest.DOWNLOAD_UPDATE else DownloadLabel.CHECK
-      owner._update_state()
-      if (fresh.download_label != expected or owner._waiting_for_updater or
-          not owner._download_btn.action_item.enabled):
-        return False
-      from openpilot.system.ui.lib.multilang import tr
-      if owner._download_btn.action_item.text != tr(expected.value):
-        return False
-      owner._on_download_update()
-    elif request.request in (SoftwareRequest.FAST_UPDATE, SoftwareRequest.ROLLBACK):
-      owner._update_state()
-      owner._confirm_direct_update("rollback" if request.request == SoftwareRequest.ROLLBACK else "fast")
-    elif request.request == SoftwareRequest.OPEN_BRANCH_CHOOSER:
-      owner._on_select_branch(self._confirmed_offroad)
-    elif request.request == SoftwareRequest.OPEN_UNINSTALL_CONFIRMATION:
-      owner._on_uninstall(self._confirmed_offroad)
-    else:
-      return False
-    return True
+    return deliver_software(self, request, shell_mode=ShellMode, destination=Destination, clock=time,
+                            software_request=SoftwareRequest, download_label=DownloadLabel)
 
   def _render_main_content(self) -> None:
     if self._current_mode == MainState.ARABESQUE or self._current_mode == MainState.HOME and ui_state.is_body:

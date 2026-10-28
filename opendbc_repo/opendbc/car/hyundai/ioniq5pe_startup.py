@@ -1,9 +1,11 @@
+from capnp.lib.capnp import _DynamicStructBuilder
 from copy import deepcopy
 from enum import Enum
 import threading
 import time
 
 from opendbc.car import Bus, make_tester_present_msg
+from opendbc.car.can_definitions import CanRecvCallable, CanSendCallable
 from opendbc.can.parser import MAX_BAD_COUNTER
 from opendbc.car.hyundai.ioniq5pe_long_profile import qualified
 from opendbc.car.hyundai.ccnc_ev_stock import qualified as stock_qualified
@@ -39,11 +41,43 @@ class Lease:
     return self.phase is Phase.OWNED
 
 
+def _plain_configuration(value):
+  pending = [(value, 0)]
+  while pending:
+    container, depth = pending.pop()
+    kind = type(container)
+    if kind is dict:
+      for key in container:
+        if type(key) is not str:
+          return False
+      children = container.values()
+    elif kind is list:
+      children = container
+    else:
+      return False
+    for child in children:
+      kind = type(child)
+      if kind is int or kind is float or kind is bool or kind is str or kind is bytes or child is None:
+        continue
+      if (kind is not dict and kind is not list) or depth >= 15:
+        return False
+      pending.append((child, depth + 1))
+  return True
+
+
+def _configuration_bytes(cp):
+  return cp.as_reader().as_builder().to_bytes()
+
+
 class PEPendingStartup:
-  def __init__(self, cp, callbacks, *, stock_cp, clock=time.monotonic,
+  @staticmethod
+  def profile_qualified(cp):
+    return qualified(cp)
+
+  def __init__(self, cp, callbacks: tuple[CanRecvCallable, CanSendCallable], *, stock_cp, clock=time.monotonic,
                boot_clock=clock_boot_ns,
                exchange=query_ioniq6_adas, event_factory=threading.Event, thread_factory=threading.Thread):
-    if not qualified(cp) or not stock_qualified(stock_cp):
+    if not self.profile_qualified(cp) or not stock_qualified(stock_cp) or stock_cp.carFingerprint != cp.carFingerprint:
       raise ValueError('PE startup requires exact separately prepared PE LONG and stock CP')
     self.owner = Lease(copy_cp(cp))
     self.stock_cp = copy_cp(stock_cp)
@@ -103,9 +137,27 @@ class PEPendingStartup:
     return self.owner.cp
 
   def prepared_for(self, cp):
-    return (not self.closed and self.fault is None and self.snapshot is not None and
-            self.owner.phase in (Phase.PENDING, Phase.OWNED, Phase.STOCK) and
-            self.owner.cp.to_dict() == self.snapshot == cp.to_dict())
+    if (self.closed or self.fault is not None or self.snapshot is None or
+        self.owner.phase not in (Phase.PENDING, Phase.OWNED, Phase.STOCK)):
+      return False
+    previous = getattr(self, '_prepared_cp_comparison', None)
+    try:
+      if (previous is not None and previous[0] is self.owner.cp and previous[1] is cp and
+          _plain_configuration(self.snapshot) and self.snapshot == previous[2] and
+          _configuration_bytes(self.owner.cp) == previous[3] and _configuration_bytes(cp) == previous[4]):
+        return True
+    except Exception:
+      pass
+    matches = self.owner.cp.to_dict() == self.snapshot == cp.to_dict()
+    self._prepared_cp_comparison = None
+    if (matches and type(self.owner.cp) is _DynamicStructBuilder and type(cp) is _DynamicStructBuilder and
+        _plain_configuration(self.snapshot)):
+      try:
+        self._prepared_cp_comparison = (self.owner.cp, cp, deepcopy(self.snapshot),
+                                        _configuration_bytes(self.owner.cp), _configuration_bytes(cp))
+      except Exception:
+        pass
+    return matches
 
   def configure(self, ci):
     if self.owner.published or not self.prepared_for(ci.CP):
@@ -116,7 +168,7 @@ class PEPendingStartup:
 
   def finalize_aol_configuration(self, ci):
 
-    if self.owner.published or ci is not self.configured_ci:
+    if self.owner.published or ci is not self.configured_ci or self.snapshot is None:
       raise RuntimeError('PE finalization requires configured unpublished CP')
     if self.owner.phase is Phase.STOCK:
       if ci.CP.to_dict() != self.snapshot:
@@ -128,6 +180,14 @@ class PEPendingStartup:
         self.owner.cp = copy_cp(ci.CP)
         self.snapshot = expected
       return
+    if (self.pending_target and ci.CP.to_dict() != self.snapshot):
+      from opendbc.car.hyundai.pe_long_aol import qualified as pe_aol_qualified
+      expected = deepcopy(self.snapshot)
+      expected['alternativeExperience'] = 32
+      if not pe_aol_qualified(ci.CP, marked_only=True) or ci.CP.to_dict() != expected:
+        raise RuntimeError('PE LONG finalization changed outside its exact AOL marker')
+      self.owner.cp = copy_cp(ci.CP)
+      self.snapshot = expected
     if ci is not self.configured_ci or not self.prepared_for(ci.CP):
       raise RuntimeError('PE LONG finalization changed the frozen prepared configuration')
 
@@ -182,7 +242,7 @@ class PEPendingStartup:
             0 < receipt <= now and now - receipt <= 300_000_000 and
             panda.safetyModel == self.owner.cp.safetyConfigs[0].safetyModel and
             panda.safetyParam == self.owner.cp.safetyConfigs[0].safetyParam and
-            panda.alternativeExperience == 0 and (panda.ignitionLine or panda.ignitionCan))
+            panda.alternativeExperience == self.owner.cp.alternativeExperience and (panda.ignitionLine or panda.ignitionCan))
 
   def _restore(self):
     if not (self.session_attempted or self.takeover_attempted) or self.restored:
@@ -232,7 +292,13 @@ class PEPendingStartup:
       self._tester()
       self.check()
       self.thread = self.thread_factory(target=self._loop, name='pe-startup-tester', daemon=True)
-      self.thread.start()
+      try:
+        self.thread.start()
+      except BaseException:
+        self.stop_event.set()
+        if getattr(self.thread, 'ident', None) is None:
+          self.thread = None
+        raise
     except BaseException:
       self.owner.phase = Phase.ABORT
       self._restore()
@@ -299,7 +365,7 @@ class PEPendingStartup:
       panda = pandas[0]
       cfg = self.owner.cp.safetyConfigs[0]
       matched = (panda.safetyModel == cfg.safetyModel and panda.safetyParam == cfg.safetyParam and
-                 panda.alternativeExperience == 0 and not panda.faults and not panda.safetyRxChecksInvalid and
+                 panda.alternativeExperience == self.owner.cp.alternativeExperience and not panda.faults and not panda.safetyRxChecksInvalid and
                  (panda.ignitionLine or panda.ignitionCan) and
                  self.source_floor_ns < panda_log_ns <= now_ns and now_ns - panda_log_ns <= 300_000_000 and
                  self.source_floor_ns < panda_recv_ns <= now_ns and now_ns - panda_recv_ns <= 300_000_000)

@@ -55,7 +55,7 @@ class TestPairedPedal(unittest.TestCase):
   def test_factory_current_words_and_exact_negatives(self):
     self.assertTrue(pedal.configured(self.cp))
     self.assertEqual(self.cp.safetyConfigs[0].safetyParam, 0x2049)
-    for fp in ({0: {0x201: 7}, 1: {}, 2: {}}, {0: {}, 1: {0x201: 6}, 2: {}}, {0: {0x201: 6, 0x2FF: 8}, 1: {}, 2: {}}):
+    for fp in ({0: {0x201: 7}, 1: {}, 2: {}}, {0: {}, 1: {0x201: 6}, 2: {}}, {0: {0x201: 5, 0x2FF: 8}, 1: {}, 2: {}}):
       cp = CarInterface.get_params(self.candidate, fp, firmware(self.candidate), False, False, False)
       self.assertFalse(pedal.configured(cp))
     self.assertTrue(pedal.prepare_stock(self.cp))
@@ -107,9 +107,9 @@ class TestPairedPedal(unittest.TestCase):
     self.safety.set_timer(1_300_001)
     self.assertFalse(self.tx(0.1))
     self.assertTrue(self.tx(0))
-    for word in (0x2149, 0x2449, 0x3049, 0xA049):
+    for word in (0x2149, 0x2849, 0x3048, 0xA048):
       self.init(word)
-      self.assertFalse(self.tx(0))
+      self.assertFalse(self.tx(0), hex(word))
       self.assertFalse(self.tx(0.1))
 
   def test_native_command_pair_bounds_checksum_bus_and_neutral(self):
@@ -192,6 +192,30 @@ class TestPairedPedal(unittest.TestCase):
       self.rx((a, d[:-1], b))
     self.assertFalse(self.tx(0.1))
     self.assertTrue(self.tx(0))
+
+  def test_main_source_lease_checksum_and_length(self):
+    from opendbc.car.toyota.carstate import CarState
+    from opendbc.car import CanData
+
+    state = CarState(self.cp)
+    parsers = state.get_can_parsers(self.cp)
+    parser = parsers[Bus.pt]
+    state.update(parsers)
+    frame = self.packer.make_can_msg('PCM_CRUISE_2', 0, {'MAIN_ON': 1})
+    parser.update([(1_000_000_000, [frame])])
+    self.assertTrue(state.update(parsers).cruiseState.available)
+    parser.update([(1_303_031_000, [])])
+    self.assertTrue(state.update(parsers).cruiseState.available)
+    parser.update([(1_303_031_001, [])])
+    self.assertFalse(state.update(parsers).cruiseState.available)
+    a, d, b = frame
+    for bad in (CanData(a, d[:-1], b), CanData(a, d[:-1] + bytes([d[-1] ^ 1]), b)):
+      parser.update([(1_400_000_000, [frame])])
+      self.assertTrue(state.update(parsers).cruiseState.available)
+      stamp = parser.ts_nanos['PCM_CRUISE_2']['MAIN_ON']
+      parser.update([(1_410_000_000, [bad])])
+      self.assertFalse(state.update(parsers).cruiseState.available)
+      self.assertEqual(parser.ts_nanos['PCM_CRUISE_2']['MAIN_ON'], stamp)
 
 
 class TestRav4CameraPairedPedal(TestPairedPedal):

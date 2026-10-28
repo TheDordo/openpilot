@@ -31,6 +31,7 @@ def lifecycle(monkeypatch):
   session.compact_y = session.compact_scroll_x = 0
   session.sidebar_expanded = True
   session._snapshot_cache = None
+  session.input = Mock()
   session.favorites = Mock()
   session.pip_warning = Mock()
   session.view = Mock()
@@ -46,6 +47,43 @@ def lifecycle(monkeypatch):
   page = runtime_app.StarCompactSettings(session)
   page.set_rect(rl.Rectangle(0, 0, 536, 240))
   return page, session, ui, paired
+
+
+@pytest.mark.parametrize("state", list(ScrollState))
+def test_main_menu_push_resets_position_and_momentum(lifecycle, monkeypatch, state):
+  page, session, _, _ = lifecycle
+  monkeypatch.setattr(runtime_app.gui_app, "_nav_stack", [Mock()])
+  for offset in (-422, -1266):
+    page._panel.set_offset(offset)
+    page._panel._state = state
+    page._panel._velocity = -1500
+    page._panel._velocity_buffer.extend([-1200, -1500])
+    session.compact_scroll_x = offset
+    session._snapshot_cache = object()
+    runtime_app.gui_app.push_widget(page)
+    assert page._panel.get_offset() == session.compact_scroll_x == 0
+    assert page._panel.state == ScrollState.STEADY
+    assert page._panel.velocity == 0
+    assert not page._panel._velocity_buffer
+    assert session._snapshot_cache is None
+    page._update_state()
+    assert page._panel.get_offset() == session.compact_scroll_x == 0
+    runtime_app.gui_app.pop_widget()
+
+
+def test_submenu_pop_keeps_main_menu_position(lifecycle, monkeypatch):
+  page, session, _, _ = lifecycle
+  monkeypatch.setattr(runtime_app.gui_app, "_nav_stack", [Mock()])
+  runtime_app.gui_app.push_widget(page)
+  page._panel.set_offset(-844)
+  session.compact_scroll_x = -844
+  panel = page._panel
+  runtime_app.gui_app.push_widget(Mock())
+  assert not page.enabled
+  runtime_app.gui_app.pop_widget()
+  assert page.enabled
+  assert page._panel is panel
+  assert page._panel.get_offset() == session.compact_scroll_x == -844
 
 
 @pytest.mark.parametrize("paired_value", [False, True])
@@ -97,6 +135,33 @@ def test_hidden_settings_still_updates_navigation_but_does_not_project(lifecycle
   assert page._panel.get_offset() != -140
   session.adapter.build.assert_not_called()
   session.view.render.assert_not_called()
+
+
+@pytest.mark.parametrize("started", [False, True])
+def test_driving_controls_card_opens_shared_editor_from_live_menu(lifecycle, monkeypatch, started):
+  from dataclasses import replace
+  from openpilot.starpilot.ui import feature_settings_compact
+  from openpilot.starpilot.ui.settings_state import SettingsInput
+  from openpilot.starpilot.ui.shell import ShellRequest
+  _, session, ui, _ = lifecycle
+  ui.started = started
+  session._mode = runtime_app.ShellMode.SETTINGS
+  layout = runtime_app.StarMiciMainLayout.__new__(runtime_app.StarMiciMainLayout)
+  layout.star = session
+  session._on_compact_destination = layout._open_compact_destination
+  editor = Mock()
+  monkeypatch.setattr(feature_settings_compact, "FeatureSettingsCompact", editor)
+  snapshot = session.snapshot(runtime_app.ShellMode.SETTINGS)
+  index = next(i for i, item in enumerate(compact_menu(snapshot.settings))
+               if item[0] == runtime_app.Destination.DRIVING_CONTROLS)
+  state = replace(snapshot.settings, compact_scroll_x=-422 * index)
+  inputs = SettingsInput(session.profile, lambda action: session._emit(ShellRequest("settings", action)))
+  inputs.press(221, 120, state)
+  editor.assert_not_called()
+  inputs.release(221, 120, state)
+  assert session.notice == ""
+  editor.assert_called_once_with(session)
+  editor.return_value.open.assert_called_once_with(runtime_app.FeaturePage.HUB)
 
 
 @pytest.mark.parametrize("mode,allowed,label,target", [

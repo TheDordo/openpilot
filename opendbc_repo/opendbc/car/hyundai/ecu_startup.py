@@ -6,12 +6,13 @@ from copy import deepcopy
 import time
 
 from opendbc.car import structs
-from opendbc.car.hyundai.values import HyundaiSafetyFlags
+from opendbc.car.hyundai.values import CAR, HyundaiSafetyFlags
 from opendbc.car.hyundai.canfd_owner import config_index
 from opendbc.car.isotp_parallel_query import IsoTpParallelQuery
 
 
 class PreparedSafetyConfig(TypedDict):
+  safetyModel: str
   safetyParam: int
 
 
@@ -21,6 +22,7 @@ class PreparedParams(TypedDict):
 
 
 class Outcome(Enum):
+  PENDING = 'pending'
   STOCK_UNTOUCHED = 'stock_untouched'
   SENT_UNCONFIRMED = 'sent_unconfirmed'
   STOCK_RESTORED = 'stock_restored'
@@ -33,6 +35,8 @@ def stock_copy(cp):
   stock.openpilotLongitudinalControl = False
   stock.pcmCruise = True
   for config in stock.safetyConfigs:
+    if stock.carFingerprint == CAR.GENESIS_GV60_EV_1ST_GEN and config.safetyParam in (0x9015, 0x9095):
+      config.safetyParam &= ~0x9000
     config.safetyParam &= ~HyundaiSafetyFlags.LONG.value
   return stock
 
@@ -54,6 +58,9 @@ class HyundaiECUStartup:
     self.ready = False
     self.prepared_cp = None
 
+  def communication_control_request(self):
+    return b'\x28\x83\x01'
+
   def _disable(self, can_recv, can_send, *, bus, addr, com_cont_req):
     self.disable_response = None
     for _ in range(10):
@@ -66,10 +73,10 @@ class HyundaiECUStartup:
         command = self._query(can_send, can_recv, bus, [(addr, None)], [com_cont_req], [b""])
         replies = command.get_data(.1)
         if not replies:
-          self.disable_response = 'suppressed_reply_sent_unconfirmed'
+          self.disable_response = ('suppressed_reply_sent_unconfirmed' if com_cont_req[1] & 0x80 else 'reply_absent_sent_unconfirmed')
           return True
         for payload in replies.values():
-          if payload == b"\x68\x03":
+          if payload == bytes((0x68, com_cont_req[1] & 0x7f)):
             self.disable_response = 'positive_communication_control'
           elif len(payload) == 3 and payload[:2] == b"\x7f\x28":
             self.disable_response = 'negative_communication_control'
@@ -96,7 +103,7 @@ class HyundaiECUStartup:
     for address, data, bus in frames:
       if address == self.address and bus == self.bus and len(data) >= 3 and data[:3] == b'\x02\x10\x03':
         self.session_attempted = True
-      if address == self.address and bus == self.bus and len(data) >= 4 and data[:4] == b'\x03\x28\x83\x01':
+      if address == self.address and bus == self.bus and len(data) >= 4 and data[:4] == b'\x03' + self.communication_control_request():
         self.disable_attempted = True
     self.callbacks[1](frames)
 
@@ -131,7 +138,7 @@ class HyundaiECUStartup:
       self.prepared_cp = deepcopy(self.cp.to_dict())
       return self.cp
     try:
-      success = self._disable(self.callbacks[0], self._send, bus=self.bus, addr=self.address, com_cont_req=b'\x28\x83\x01')
+      success = self._disable(self.callbacks[0], self._send, bus=self.bus, addr=self.address, com_cont_req=self.communication_control_request())
     except Exception:
       success = False
     if success and self.disable_attempted:
@@ -161,7 +168,7 @@ class HyundaiECUStartup:
     if not self.prepared_for(ci.CP):
       raise RuntimeError(f'{self.label} prepared startup does not match constructed CP')
     self.ci = ci
-    if self.outcome is Outcome.SENT_UNCONFIRMED:
+    if self.outcome in (Outcome.PENDING, Outcome.SENT_UNCONFIRMED):
       self.ready = True
       return  # Preserve ordinary controller commands and1Hz tester cadence.
     self._warm_stock(ci)
@@ -173,16 +180,20 @@ class HyundaiECUStartup:
     if self.prepared_for(ci.CP):
       return
     from opendbc.car.hyundai.ev6_aol import qualified as ev6_aol_qualified
-    if self.outcome is Outcome.SENT_UNCONFIRMED and ev6_aol_qualified(ci.CP, marked_only=True):
+    from opendbc.car.hyundai.canfd_stock_aol import qualified_long
+    from opendbc.car.hyundai.gv70_startup import eligible as gv70_eligible
+    captured_long = ev6_aol_qualified(ci.CP, marked_only=True) or (
+      gv70_eligible(ci.CP) and qualified_long(ci.CP, marked_only=True))
+    if self.outcome is Outcome.SENT_UNCONFIRMED and captured_long:
       expected = deepcopy(cast(PreparedParams, self.prepared_cp))
       configs = expected.get('safetyConfigs', [])
       owner = config_index(ci.CP)
       if owner is None or len(configs) != owner + 1 or configs[owner]['safetyParam'] != 0x15 or expected['alternativeExperience'] != 0:
-        raise RuntimeError('EV6 prepared LONG profile cannot be finalized')
+        raise RuntimeError('Captured ADRV prepared LONG profile cannot be finalized')
       configs[owner]['safetyParam'] |= 0x0800
       expected['alternativeExperience'] = 32
       if ci.CP.to_dict() != expected:
-        raise RuntimeError('EV6 AOL finalization changed unrelated CarParams')
+        raise RuntimeError('Captured ADRV AOL finalization changed unrelated CarParams')
       self.prepared_cp = expected
       return
     from opendbc.car.hyundai.canfd_stock_aol import qualified as stock_aol_qualified

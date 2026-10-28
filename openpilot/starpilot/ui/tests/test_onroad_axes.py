@@ -5,7 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace as NS
 import unittest
-import pytest
 from unittest.mock import Mock, patch
 
 import pyray as rl
@@ -30,6 +29,10 @@ def rgba(color: rl.Color) -> tuple[int, int, int, int]:
 
 class TestOnroadAxes(unittest.TestCase):
   def setUp(self):
+    for name in ('draw_rectangle_rounded', 'draw_rectangle_rounded_lines_ex', 'draw_circle', 'draw_ring'):
+      self.enterContext(patch('openpilot.starpilot.ui.speed_limit_widget.rl.' + name, new_callable=Mock))
+    for name in ('circle', 'arrow', 'outline'):
+      self.enterContext(patch('openpilot.starpilot.ui.speed_limit_shapes.SpeedLimitShapes.' + name, new_callable=Mock))
     self.ui = ui_fake()
     self.ui.CP = NS(carFingerprint='', openpilotLongitudinalControl=True, pcmCruise=False)
     car = self.ui.sm["carState"]
@@ -337,6 +340,7 @@ class TestOnroadAxes(unittest.TestCase):
     fonts.measure.return_value = NS(width=20, height=10)
     fonts.vertical_ink.return_value = (0, 10)
     compact = CompactHudRenderer(fonts, Path("/unused"))
+    fonts.horizontal_ink.return_value = (0, 20)
     with patch.object(compact, "prepare"), patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_texture_pro"), \
          patch("openpilot.starpilot.ui.onroad_compact_widgets.rl.draw_circle_gradient"):
       compact.render(active)
@@ -392,8 +396,3 @@ class TestOnroadAxes(unittest.TestCase):
 if __name__ == "__main__":
   unittest.main()
 
-
-@pytest.fixture(autouse=True)
-def mock_sign_graphics(monkeypatch):
-  for name in ('draw_rectangle_rounded_lines_ex', 'draw_circle', 'draw_ring'):
-    monkeypatch.setattr('openpilot.starpilot.ui.speed_limit_widget.rl.' + name, Mock())

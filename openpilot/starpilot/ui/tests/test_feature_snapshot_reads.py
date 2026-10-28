@@ -38,11 +38,11 @@ class FeatureSnapshotReadTests(unittest.TestCase):
 
   def test_duplicate_torque_sources_are_read_once_per_assembly(self):
     first = self.snapshot()
-    self.assertEqual(set(self.params.reads), {"TorqueOverrideDocument"})
+    self.assertEqual(set(self.params.reads), {"TorqueOverrideDocument", "LaneChangePreferences"})
     self.assertEqual(len(self.params.reads), len(set(self.params.reads)))
     self.params.reads.clear()
     self.assertEqual(self.snapshot(), first)
-    self.assertEqual(set(self.params.reads), {"TorqueOverrideDocument"})
+    self.assertEqual(set(self.params.reads), {"TorqueOverrideDocument", "LaneChangePreferences"})
     self.assertEqual(len(self.params.reads), len(set(self.params.reads)))
 
   def test_learning_row_reads_scoped_and_legacy_sources_once(self):

@@ -15,10 +15,10 @@ MAX_BYTES = 512
 MAX_SPEED_MPS = 100 * CV.MPH_TO_MS
 MINIMUM_SPEED_MPS = 5 * CV.MPH_TO_MS
 DEFAULT_SPEED_MPS = MINIMUM_SPEED_MPS
-# Force turn desires (6.x "TurnDesires"): a lone blinker below this speed asks the model to turn, with no navigation
-# route. The gate keeps a blinker given well before the corner from turning the car in early. Its range is sunnypilot's
-# Lane Turn Speed: 5-20 mph, where 20 mph is the speed lane changes start, so a turn desire never overlaps one at the
-# default minimum lane-change speed (vfn's slider ran 0-100 mph, tied to the lane-change minimum).
+# Force turn desires (Night Star, 6.x "TurnDesires"): a lone blinker below this speed asks the model to turn, with no
+# navigation route and ahead of Turn Signal Guidance. The gate keeps a blinker given well before the corner from turning
+# the car in early. Its range is sunnypilot's Lane Turn Speed: 5-20 mph, where 20 mph is the speed lane changes start, so a
+# turn desire never overlaps one at the default minimum lane-change speed (vfn's slider ran 0-100 mph).
 TURN_DESIRE_MIN_SPEED_MPS = 5 * CV.MPH_TO_MS
 TURN_DESIRE_MAX_SPEED_MPS = 20 * CV.MPH_TO_MS
 DEFAULT_TURN_DESIRE_SPEED_MPS = 15 * CV.MPH_TO_MS
@@ -35,6 +35,7 @@ class LaneChangePolicy:
   close_gap: bool = False
   close_gap_seconds: float = 0.75
   duration_s: float = 3.0 + 25.0 / 9.0
+  turn_signal_guidance: bool = True
   turn_desires: bool = False
   turn_desire_speed_mps: float = DEFAULT_TURN_DESIRE_SPEED_MPS
 
@@ -68,19 +69,23 @@ def decode(raw: bytes) -> LaneChangePolicy | None:
     return None
   version = data.get("version")
   fields = {"version", "enabled", "minimumSpeedMps", "onePerSignal"}
-  if version in (2, 3, 4, 5):
+  if version in (2, 3, 4, 5, 6):
     fields |= {"autoLaneChange", "autoDelayS", "minimumLaneWidthM"}
-  if version in (3, 4, 5):
+  if version in (3, 4, 5, 6):
     fields |= {"closeGap", "closeGapSeconds"}
-  if version in (4, 5):
+  if version in (4, 5, 6):
     fields |= {"durationS"}
+  # Version 5 is SGSP's (turnSignalGuidance), or the shape our Force turn desires wrote before the two settings shared a
+  # document (turnDesires / turnDesireSpeedMps, guidance then at its default). Version 6 carries all three.
   if version == 5:
-    fields |= {"turnDesires", "turnDesireSpeedMps"}
+    fields |= {"turnDesires", "turnDesireSpeedMps"} if "turnDesires" in data else {"turnSignalGuidance"}
+  if version == 6:
+    fields |= {"turnSignalGuidance", "turnDesires", "turnDesireSpeedMps"}
   if set(data) != fields:
     return None
   enabled = data["enabled"]
   speed, once = data["minimumSpeedMps"], data["onePerSignal"]
-  if (type(version) is not int or version not in (1, 2, 3, 4, 5) or type(enabled) is not bool or type(once) is not bool or
+  if (type(version) is not int or version not in (1, 2, 3, 4, 5, 6) or type(enabled) is not bool or type(once) is not bool or
       type(speed) not in (int, float)):
     return None
   try:
@@ -114,18 +119,19 @@ def decode(raw: bytes) -> LaneChangePolicy | None:
   duration = data.get("durationS", LaneChangePolicy().duration_s)
   if type(duration) not in (int, float) or not math.isfinite(duration) or not 3.0 <= duration <= 8.0:
     return None
-  if version < 5:
-    return LaneChangePolicy(enabled, finite_speed, once, auto, delay, width, close_gap, seconds, float(duration))
-  turn, turn_speed = data["turnDesires"], data["turnDesireSpeedMps"]
+  guidance = data.get("turnSignalGuidance", True)
+  if type(guidance) is not bool:
+    return None
+  turn, turn_speed = data.get("turnDesires", False), data.get("turnDesireSpeedMps", DEFAULT_TURN_DESIRE_SPEED_MPS)
   if type(turn) is not bool or type(turn_speed) not in (int, float) or not valid_turn_desire_speed(turn_speed):
     return None
-  return LaneChangePolicy(enabled, finite_speed, once, auto, delay, width, close_gap, seconds, float(duration),
+  return LaneChangePolicy(enabled, finite_speed, once, auto, delay, width, close_gap, seconds, float(duration), guidance,
                           turn, float(turn_speed))
 
 
 def valid_turn_desire_speed(value) -> bool:
   try:
-    return math.isfinite(value) and TURN_DESIRE_MIN_SPEED_MPS <= value <= TURN_DESIRE_MAX_SPEED_MPS
+    return not isinstance(value, bool) and math.isfinite(value) and TURN_DESIRE_MIN_SPEED_MPS <= value <= TURN_DESIRE_MAX_SPEED_MPS
   except TypeError:
     return False
 
@@ -158,16 +164,18 @@ def to_value(policy: LaneChangePolicy) -> dict[str, int | bool | float]:
     raise ValueError("invalid lane-change close gap")
   if type(policy.duration_s) not in (int, float) or not math.isfinite(policy.duration_s) or not 3.0 <= policy.duration_s <= 8.0:
     raise ValueError("invalid lane-change duration")
+  if type(policy.turn_signal_guidance) is not bool:
+    raise ValueError("invalid turn signal guidance")
   if (type(policy.turn_desires) is not bool or type(policy.turn_desire_speed_mps) not in (int, float) or
       not valid_turn_desire_speed(policy.turn_desire_speed_mps)):
     raise ValueError("invalid turn desire policy")
-  value = {"version": 4, "enabled": policy.enabled, "minimumSpeedMps": finite_speed,
+  value = {"version": 5, "enabled": policy.enabled, "minimumSpeedMps": finite_speed,
            "onePerSignal": policy.one_per_signal, "autoLaneChange": policy.auto_lane_change,
            "autoDelayS": delay, "minimumLaneWidthM": width,
-           "closeGap": policy.close_gap, "closeGapSeconds": seconds, "durationS": policy.duration_s}
-  # version 5 only once the turn desire fields leave their defaults, so an untouched document stays StarPilot's v4
+           "closeGap": policy.close_gap, "closeGapSeconds": seconds, "durationS": policy.duration_s, "turnSignalGuidance": policy.turn_signal_guidance}
+  # version 6 only once the Force turn desires fields leave their defaults, so an untouched document stays SGSP's version 5
   if policy.turn_desires or policy.turn_desire_speed_mps != DEFAULT_TURN_DESIRE_SPEED_MPS:
-    value |= {"version": 5, "turnDesires": policy.turn_desires, "turnDesireSpeedMps": float(policy.turn_desire_speed_mps)}
+    value |= {"version": 6, "turnDesires": policy.turn_desires, "turnDesireSpeedMps": float(policy.turn_desire_speed_mps)}
   return value
 
 
@@ -215,7 +223,7 @@ class LiveLaneChangePolicy:
 
   @staticmethod
   def _disabled():
-    return replace(LaneChangePolicy(), enabled=False, auto_lane_change=False)
+    return replace(LaneChangePolicy(), enabled=False, auto_lane_change=False, turn_signal_guidance=False, turn_desires=False)
 
   def sample(self, now_ns, *, signaling=False, maneuver_active=False):
     if type(now_ns) is not int or now_ns <= 0 or now_ns < self.last_read_ns:
@@ -230,6 +238,10 @@ class LiveLaneChangePolicy:
       self.applied = replace(self.applied, enabled=False, auto_lane_change=False)
     elif not self.requested.auto_lane_change and self.applied.auto_lane_change:
       self.applied = replace(self.applied, auto_lane_change=False)
+    if not self.requested.turn_signal_guidance:
+      self.applied = replace(self.applied, turn_signal_guidance=False)
+    if not self.requested.turn_desires:
+      self.applied = replace(self.applied, turn_desires=False)
     if not signaling and not maneuver_active:
       self.applied = self.requested
     return self.applied

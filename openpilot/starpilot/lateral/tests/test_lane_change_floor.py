@@ -26,7 +26,7 @@ class TestLaneChangeFloor(unittest.TestCase):
     for auto in (False, True):
       for speed in (0., MINIMUM_SPEED_MPS - 1e-6, MINIMUM_SPEED_MPS):
         with self.subTest(auto=auto, speed=speed):
-          helper = DesireHelper(LaneChangePolicy(minimum_speed_mps=0., auto_lane_change=auto, auto_delay_s=0.))
+          helper = DesireHelper(LaneChangePolicy(minimum_speed_mps=0., auto_lane_change=auto, auto_delay_s=0., turn_signal_guidance=False))
           helper.update(state(speed, False), True, 1., engaged=True, auto_evidence=True)
           helper.update(state(speed), True, 1., engaged=True, auto_evidence=True)
           helper.update(state(speed, torque=True), True, 1., engaged=True, auto_evidence=True)

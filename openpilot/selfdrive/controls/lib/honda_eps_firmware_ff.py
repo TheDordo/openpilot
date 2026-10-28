@@ -69,6 +69,9 @@ class ColumnLoadModel:
 # from starpilotModelV2.lateralSource). These values are the action-head ones, measured on action-head drives. Each
 # delay is sized at or below what was measured, so it cannot make a car late.
 # - Clarity (Cinque v3): 0.12-0.14 s early (route 37e); 0.12 s took entries from -0.25 to -0.11 s (route 380).
+#   Still early with 0.12 s on the 7.x drives, on every model (2026-10-25, town turns): routes 1a / 28 (MD v3) / 39
+#   (Flip Flop roundabout) -0.13 s, 32 (Flip Flop) / 33 -0.07 s, so 0.19-0.25 s in all; it takes 0.20 s, which can
+#   leave the two -0.07 s drives ~0.01 s late.
 # - Civic Bosch C020 (tsfdo): routes 290 / 293 / 289 -0.09 / -0.15 / -0.22 s, median -0.15. Checked with it on
 #   (routes 2b7 / 2c6 / 2d4): -0.14 / -0.11 / +0.03 s, -0.045 weighted, against -0.15 without it on 289 / 290 / 294.
 # - Insight: 0.15, inferred from a LatControlPID drive (see INSIGHT_TXM_A040).
@@ -136,6 +139,7 @@ class EpsFirmwareCalibration:
   rack: RackMapTable | None = None  # rack ratio after the firmware angle table, yaw-fitted on the car or predicted
                                     # from its specs (honda_eps_spec_plant); when set it is the geometry, ahead of the
                                     # road curve and HondaEpsFirmwareVgr
+  friction_width_v: tuple | None = None  # the friction knee at FRICTION_WIDTH_SPEED_BP, deg/s; None: FRICTION_WIDTH_V
   kp_pieces: tuple = field(init=False, repr=False, compare=False)
 
   def __post_init__(self):
@@ -165,6 +169,15 @@ class EpsFirmwareCalibration:
 
   def r5_ceiling(self, v_ego: float) -> float:
     return float(np.interp(self.key_ceiling(v_ego), self.r5_key_bp, self.r5_v))
+
+  def output_ceiling(self) -> float:
+    """The largest |output| the firmware still answers: past the end of the command row or the input clamp, more 0xE4
+    gives the same R5. A 4096-per-unit car whose row ends at key 1663 (CR-V A040 rows 0-1, A220 rows 0-3) tops out at
+    3841/4096 = 0.9377 (key 1663 is 3840.6 E4 counts, rounded up by the ceil below); a car sent its own clamp (the Clarity,
+    the Civics) at 1.0. The speed envelope is left out: it lowers the ceiling only at highway speed, on every car, and the
+    validated cars were tuned with 1.0 there."""
+    key = min(self.key_clamp, self.r5_key_bp[-1])
+    return min(1.0, math.ceil(key * 4.0 * 32768.0 / 56756.0) / self.e4_per_output)
 
 
 # R6, the firmware's rate feedback, is computed from the image, not measured. The estimator (FUN_343FC) takes the
@@ -213,14 +226,17 @@ def computed_r6(profile: str, norm: float = 1650.0) -> tuple[float, tuple, tuple
 # (the friction is then under-compensated), which only pays off at city speed: replaying hands-off chunks of routes
 # 35e/360/361, a 20 deg/s knee cut the 0.6-2 Hz wheel/target transfer 0.93 -> 0.73 at 10-16 m/s for +25 ms, but
 # above 16 m/s bought nothing (1.02 -> 0.97) for +45 ms of lag and RMS error 0.27 -> 0.37 deg. So it is scheduled:
-# 20 deg/s up to 8 m/s, back to 5 by 15 m/s (10-16 m/s: 0.76 at +10 ms; above: unchanged).
+# 20 deg/s up to 8 m/s, back to 5 by 15 m/s (10-16 m/s: 0.76 at +10 ms; above: unchanged). A calibration can carry
+# its own (friction_width_v): on a car whose loop is delay-limited at speed the sharp knee is a rate gain the loop
+# cannot afford (the RDX, see ACURA_RDX_TJB_A220).
 FRICTION_WIDTH_DEG_S = 5.0
 FRICTION_WIDTH_SPEED_BP = [8.0, 15.0]  # m/s
 FRICTION_WIDTH_V = [20.0, FRICTION_WIDTH_DEG_S]  # deg/s
 
 
-def friction_width(v_ego: float) -> float:
-  return float(np.interp(v_ego, FRICTION_WIDTH_SPEED_BP, FRICTION_WIDTH_V))
+def friction_width(v_ego: float, cal: "EpsFirmwareCalibration | None" = None) -> float:
+  widths = cal.friction_width_v if cal is not None and cal.friction_width_v is not None else FRICTION_WIDTH_V
+  return float(np.interp(v_ego, FRICTION_WIDTH_SPEED_BP, widths))
 
 # Smoothing, picked in the closed-loop replay of route 352 over three plants (nominal, the 353 fit, +15 ms
 # motor lag): unsmoothed, the command carried 3.8x vfn's 5-8 Hz content (the Clarity column's stutter band);
@@ -360,7 +376,7 @@ class HondaEpsFirmwareFeedforward:
     self.prev_angle = desired_angle_no_offset
 
     angle = desired_angle_no_offset + self.lead_s * self.rate
-    width = self.friction_width if self.friction_width is not None else friction_width(v_ego)
+    width = self.friction_width if self.friction_width is not None else friction_width(v_ego, self.cal)
     self.load = column_load(angle, self.rate, v_ego, roll, self.cal.load, width)
     cap = min(R5_CAP, R5_CAP_ENVELOPE_FRAC * self.cal.r5_ceiling(v_ego))
     self.r5 = max(min(r5_for_motion(self.load, self.rate, self.cal, self.r5, angle), cap), -cap)
@@ -422,12 +438,15 @@ class HondaEpsLateralCore:
     if steer_limited and not steering_pressed and self.since_press_s <= self.override_fade_up_s + self.dt:
       self.pid.i *= math.exp(-self.dt / OVERRIDE_FADE_I_BLEED_TAU)  # see OVERRIDE_FADE_I_BLEED_TAU
 
+    # Clamp at what the firmware still answers, so the integrator cannot wind into 0xE4 the map ignores
+    limit = self.ff.cal.output_ceiling()
+    self.pid.set_limits(limit, -limit)
     i_scale = speed_band(v_ego, self.i_scale)
     self.pid.update(error, speed=v_ego, feedforward=ff,
                     freeze_integrator=steer_limited or steering_pressed or v_ego < INTEGRATOR_MIN_SPEED,
                     integrator_gain_scale=i_scale,
                     reset_integrator=i_scale <= 0.0 or v_ego < INTEGRATOR_MIN_SPEED)
-    output = max(min(self.pid.p * speed_band(v_ego, self.p_scale) + self.pid.i + self.pid.d + ff, 1.0), -1.0)
+    output = max(min(self.pid.p * speed_band(v_ego, self.p_scale) + self.pid.i + self.pid.d + ff, limit), -limit)
 
     if self.output_lpf_enabled:
       self.output_lpf.update_alpha(speed_band(v_ego, self.output_lpf_tau))
@@ -435,5 +454,5 @@ class HondaEpsLateralCore:
     else:
       self.output_lpf.x = output
       self.output_lpf.initialized = True
-    self.output = max(min(output, 1.0), -1.0)
+    self.output = max(min(output, limit), -limit)
     return self.output

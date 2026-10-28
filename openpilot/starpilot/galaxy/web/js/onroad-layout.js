@@ -9,6 +9,7 @@ import { GalaxySelect } from "./galaxy-select.js"
 import { GxNotice } from "./notice.js"
 import { GxDialog } from "./dialog.js"
 import { GalaxySettingRow, switchRow } from "./galaxy-setting-row.js"
+import { showDraftChange } from "./save-feedback.js"
 import { snapTargets, snapMove, snapResize, snapThreshold } from "./layout-snap.js"
 
 import { PROFILES, ROAD_COLORS, PATH_MODES, HEX, PROJECTION_DISPLAY_SWITCHES, layoutDocument, previewDocument, withDisplay, orderedWidgetIds, widgetPalette, withAlpha, widgetSize, placementLimits, clampBox, clampPlacement, overlapsReserved, previewPoint, validDocument, validSnapshot } from "./onroad-layout-document.js"
@@ -118,6 +119,7 @@ export class OnroadLayoutFeed {
       if (response.status === 409) throw new Error("Saved values or parked status changed. Your edits are kept here. Reload before saving again.")
       if (!response.ok) throw new Error(saving ? "Colors and layout could not be saved. Your edits are kept here. Reload before trying again." :
         "Colors and layout are unavailable. Try reloading.")
+      const mapMoved = saving && data.mapDisabledElsewhere === true
       data = this.projection ? editorSnapshot(data) : withDisplay(data)
       if (!validSnapshot(data)) throw new Error("The device returned an unsupported colors and layout document. Reload to try again.")
       const initial = !this.data
@@ -128,7 +130,7 @@ export class OnroadLayoutFeed {
         status: "ready", data, ...((saving || initial || !background) ? { draft: clone(data.document) } : {}), error: "", needsReload: false,
         notice: saving ? (this.projection ? "Android Auto layout saved." : data.failed?.length ?
           "Layout saved, but these display options did not change: " + data.failed.join(", ") + ". Reload and try again." :
-          "Colors and both layouts saved.") :
+          "Colors and both layouts saved.") + (mapMoved ? " The map overlay is now off in the " + (this.projection ? "Big screen" : "Android Auto") + " layout." : "") :
           !background && !initial ? "Reloaded the saved layout." : ""
       })
       return true
@@ -190,6 +192,24 @@ export const LayoutWidgetPreview = {
           :font-size="profile === 'large' ? 48 : 21" font-weight="600"
           style="filter: drop-shadow(2px 2px 1px #000000aa)">{{ clock24Hour ? '18:00' : '12:00 PM' }}</text>
       </template>
+      <g v-else-if="widget.kind === 'now_playing'">
+        <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
+        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="30" fill="#c7aef7" />
+        <rect :x="widget.height / 2 - 9" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
+        <rect :x="widget.height / 2 + 3" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
+        <text :x="widget.height + 4" y="40" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City</text>
+        <text :x="widget.height + 4" y="68" font-size="22" fill="#b8b2c8">M83</text>
+        <rect :x="widget.height + 4" :y="widget.height - 16" :width="widget.width - widget.height * 1.5 - 4" height="4" rx="2" fill="#ffffff" fill-opacity=".2" />
+        <rect :x="widget.height + 4" :y="widget.height - 16" :width="(widget.width - widget.height * 1.5 - 4) * .38" height="4" rx="2" fill="#c7aef7" />
+      </g>
+      <g v-else-if="widget.kind === 'jetlink_status'">
+        <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
+        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="9" fill="#46c86e" />
+        <text :x="widget.height - 6" y="38" font-size="28" font-weight="600" fill="#f5f2fc">Link up</text>
+        <text :x="widget.height - 6" y="66" font-size="22" fill="#b8b2c8">Jetlink • iPhone</text>
+        <text :x="widget.width - 70" :y="widget.height / 2 + 12" text-anchor="end" font-size="34" font-weight="600" fill="#f5f2fc">24.6</text>
+        <text :x="widget.width - 30" :y="widget.height / 2 + 12" text-anchor="end" font-size="22" fill="#b8b2c8">ms</text>
+      </g>
       <template v-else-if="widget.kind === 'speed_limit'">
         <text x="0" y="10" font-size="24" font-weight="500">LIMIT</text>
         <path v-if="pending(scene)" d="M90 12 V-8 M84 -2 L90 -8 L96 -2" fill="none" :stroke="palette.text || '#ffffff'" stroke-width="2" />
@@ -230,6 +250,14 @@ export const LayoutWidgetPreview = {
           <path d="M54 20 H24 V76 H54" />
           <path d="M38 48 H78 M67 37 L78 48 L67 59" />
         </g>
+      </g>
+      <g v-else-if="widget.kind === 'jetlink_status'">
+        <rect :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
+        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="9" fill="#46c86e" />
+        <text :x="widget.height - 6" y="40" font-size="28" font-weight="600" fill="#f5f2fc">Link up</text>
+        <text :x="widget.height - 6" y="68" font-size="22" fill="#b8b2c8">Jetlink • iPhone</text>
+        <text :x="widget.width - 70" y="52" text-anchor="end" font-size="34" font-weight="600" fill="#f5f2fc">24.6</text>
+        <text :x="widget.width - 30" y="52" text-anchor="end" font-size="22" fill="#b8b2c8">ms</text>
       </g>
       <g v-else-if="widget.kind === 'nav_card'">
         <rect x="1" y="1" :width="widget.width - 2" :height="widget.height - 2" rx="39" fill="#0f0d17f5" stroke="#a07edcbe" stroke-width="2" />
@@ -324,7 +352,7 @@ export const OnroadLayoutPage = {
       for (const [key, value] of Object.entries(update)) {
         if (JSON.stringify(state[key]) !== JSON.stringify(value)) state[key] = value
       }
-      if (draftChanged || ["Colors and both layouts saved.", "Android Auto layout saved."].includes(update.notice)) state.history = { undo: [], redo: [], group: null }
+      if (draftChanged || ["Colors and both layouts saved.", "Android Auto layout saved."].some(saved => update.notice?.startsWith(saved))) state.history = { undo: [], redo: [], group: null }
     }
     const feed = new OnroadLayoutFeed({ projection: props.projection, unauthorized: props.unauthorized, publish: apply })
     watch(() => !!state.drag || !!state.layerDrag, (dragging) => { if (!dragging && deferred) apply({}) }, { flush: "sync" })
@@ -391,16 +419,27 @@ export const OnroadLayoutPage = {
     sceneBorder() { return previewScene(this.state.scene).border },
     expandedRoad() { return !this.projection && this.state.profile === "large" && this.displayValue("DeveloperSidebar") !== "On" },
     roadBounds() { return this.expandedRoad ? { ...this.profile.bounds, width: this.profile.bounds.width + 300 } : this.profile.bounds },
+    // Widgets reach the whole screen only while the developer sidebar is hidden; otherwise the road beside it.
+    limitProfile() {
+      if (this.expandedRoad || this.projection || !this.profile) return this.profile
+      return { ...this.profile, widgets: Object.fromEntries(Object.entries(this.profile.widgets).map(([id, widget]) => {
+        if (!widget.expandable) return [id, widget]
+        const { bounds, ...narrow } = widget
+        return [id, narrow]
+      })) }
+    },
     // The last screen for this profile stays up while the next scene renders, instead of flashing the sketch.
     nativeBackdropReady() { return !!this.state.backdrop.url && this.state.backdrop.profile === (this.projection ? "projection" : this.state.profile) },
     layout() { return this.state.draft?.layouts[this.state.profile] },
     projectionHasPipWidget() {
       return ["pip_left", "pip_right"].some(id => this.state.draft?.layouts?.large?.[id]?.enabled === true)
     },
-    widgets() { return Object.entries(this.profile?.widgets || {}).map(([id, widget]) => ({ id, ...widget })) },
+    widgets() { return Object.entries(this.profile?.widgets || {})
+      .filter(([id, widget]) => widget.available !== false || this.layout?.[id]?.enabled)
+      .map(([id, widget]) => ({ id, ...widget })) },
     layerWidgets() {
       return orderedWidgetIds(this.state.draft, this.state.data.metadata, this.state.profile)
-        .slice().reverse().map(id => this.widgets.find(widget => widget.id === id)).filter(widget => this.layout[widget.id].enabled)
+        .slice().reverse().map(id => this.widgets.find(widget => widget.id === id)).filter(widget => widget && this.layout[widget.id].enabled)
     },
     listWidgets() { return this.state.layerDrag ? this.state.layerDrag.rows.map(id => this.widgets.find(widget => widget.id === id)) : this.layerWidgets },
     selectionBox() {
@@ -424,11 +463,13 @@ export const OnroadLayoutPage = {
         return {
           ...widget, width, height, ...(widget.iconSize ? { display: this.layout[widget.id].display } : {}),
           ...(widget.opacity ? { opacity: this.layout[widget.id].opacity } : {}),
-          ...(widget.backgroundToggle ? { background: this.layout[widget.id].background } : {})
+          ...(widget.backgroundToggle ? { background: this.layout[widget.id].background } : {}),
+          ...(widget.collapseToggle ? { collapse: this.layout[widget.id].collapse } : {})
         }
       })
     },
-    inactiveWidgets() { return this.widgets.filter(({ id }) => !this.layout[id].enabled || (this.state.drag?.fromTray && this.state.drag.id === id)) },
+    inactiveWidgets() { return this.widgets.filter(({ id, available }) => available !== false &&
+      (!this.layout[id].enabled || (this.state.drag?.fromTray && this.state.drag.id === id))) },
     availableProfiles() { return this.state.data?.supportedProfiles || (this.state.data?.activeProfile ? [this.state.data.activeProfile] : []) },
     selectedWidget() { return this.profile?.widgets[this.state.selected] },
     selectedPosition() { return this.layout?.[this.state.selected] },
@@ -465,7 +506,7 @@ export const OnroadLayoutPage = {
       return [{ offset: 0, color: '#72ff5c', alpha: 0 }, { offset: .5, color: '#72ff5c', alpha: 89 / 255 },
       { offset: 1, color: '#0df87a', alpha: 102 / 255 }]
     },
-    limits() { return this.selectedWidget ? placementLimits(this.profile, this.state.selected, this.layout) : null },
+    limits() { return this.selectedWidget ? placementLimits(this.limitProfile, this.state.selected, this.layout) : null },
     displayGroups() {
       const groups = []
       for (const row of this.state.data?.display || []) {
@@ -491,11 +532,17 @@ export const OnroadLayoutPage = {
   },
   methods: {
     previewShift(id) {
-      return this.expandedRoad ? ({ steering_wheel: 300, current_speed: 150, torque_bar: 150, driving_mode_descriptions: 150, clock: 150 }[id] || 0) : 0
+      return this.expandedRoad ? (this.profile.widgets[id]?.anchorShift || 0) * 300 : 0
     },
-    previewX(id) { return this.layout[id].x + this.previewShift(id) },
+    // A position saved for the wider screen is shown pulled inside the road that is showing, as the device does.
+    previewX(id) {
+      const x = this.layout[id].x + this.previewShift(id), widget = this.profile.widgets[id]
+      if (!widget?.expandable) return x
+      const road = this.roadBounds
+      return Math.max(road.x, Math.min(x, road.x + road.width - widgetSize(widget, this.layout[id])[0]))
+    },
     previewSnapTargets(id) {
-      if (!this.expandedRoad) return snapTargets(this.profile, this.layout, id, key => !this.previewHidden(key))
+      if (!this.expandedRoad) return snapTargets(this.limitProfile, this.layout, id, key => !this.previewHidden(key))
       const widget = this.profile.widgets[id], bounds = widget.bounds || this.profile.bounds, shift = this.previewShift(id)
       const profile = { ...this.profile, widgets: { ...this.profile.widgets, [id]: { ...widget, bounds: { ...bounds, x: bounds.x + shift } } } }
       const layout = Object.fromEntries(Object.entries(this.layout).map(([key, at]) => [key, { ...at, x: this.previewX(key) }]))
@@ -767,7 +814,7 @@ export const OnroadLayoutPage = {
     },
     changePosition(id, x, y) {
       if (!this.editable) return
-      const position = clampPlacement(this.profile, id, x, y, this.layout)
+      const position = clampPlacement(this.limitProfile, id, x, y, this.layout)
       if (position) {
         const before = this.state.drag ? null : clone(this.state.draft)
         Object.assign(this.layout[id], position)
@@ -777,7 +824,7 @@ export const OnroadLayoutPage = {
       this.state.notice = ""
     },
     add(id) {
-      if (!this.editable || this.state.drag || !Object.hasOwn(this.profile.widgets, id)) return
+      if (!this.editable || this.state.drag || !Object.hasOwn(this.profile.widgets, id) || this.profile.widgets[id].available === false) return
       const before = clone(this.state.draft)
       this.layout[id].enabled = true
       if (this.sceneHidden(id)) this.state.scene = "general"
@@ -810,6 +857,7 @@ export const OnroadLayoutPage = {
       this.state.draft.clock24Hour = event.target.checked
       this.recordChange(before)
       this.state.notice = ""
+      showDraftChange()
     },
     displayRow(key) { return this.state.data?.display?.find(row => row.key === key) },
     displayValue(key) { return this.state.draft?.display?.[key] },
@@ -835,6 +883,7 @@ export const OnroadLayoutPage = {
       this.state.draft.showMaxSpeed = event.target.checked
       this.recordChange(before)
       this.state.notice = ""
+      showDraftChange()
     },
     setSpeedSources(key, value) {
       if (!this.editable || this.state.drag || this.state.layerDrag || this.selectedWidget?.kind !== "cruise_limits" ||
@@ -845,7 +894,7 @@ export const OnroadLayoutPage = {
       // Actions that sat right under the card follow its new bottom; both stay on screen.
       if (actions && actions.x === card.x && actions.y === card.y + oldHeight + 22) actions.y = card.y + height + 22
       for (const id of ["cruise_limits", "speed_limit_actions"].filter(id => this.layout[id])) {
-        const limits = placementLimits(this.profile, id, this.layout)
+        const limits = placementLimits(this.limitProfile, id, this.layout)
         this.layout[id].y = Math.max(limits.minY, Math.min(this.layout[id].y, limits.maxY))
       }
       this.recordChange(before)
@@ -890,7 +939,7 @@ export const OnroadLayoutPage = {
         const [newWidth] = widgetSize(this.selectedWidget, this.selectedPosition)
         this.selectedPosition.x += (oldWidth - newWidth) / 2
       }
-      Object.assign(this.selectedPosition, clampPlacement(this.profile, this.state.selected,
+      Object.assign(this.selectedPosition, clampPlacement(this.limitProfile, this.state.selected,
         this.selectedPosition.x, this.selectedPosition.y, this.layout))
       this.recordChange(before)
       this.state.notice = ""
@@ -910,7 +959,7 @@ export const OnroadLayoutPage = {
       }
       const before = clone(this.state.draft), position = this.selectedPosition
       position.size = size
-      const next = clampPlacement(this.profile, this.state.selected, position.x, position.y, this.layout)
+      const next = clampPlacement(this.limitProfile, this.state.selected, position.x, position.y, this.layout)
       if (next) {
         Object.assign(position, next)
         this.recordChange(before)
@@ -933,6 +982,7 @@ export const OnroadLayoutPage = {
     },
     startDrag(id, event, fromTray = false) {
       if (!this.editable || event.button > 0 || this.state.drag || !Object.hasOwn(this.profile.widgets, id)) return
+      if (fromTray && this.profile.widgets[id].available === false) return
       if (fromTray && this.sceneHidden(id)) this.state.scene = "general"
       const point = previewPoint(event, this.$refs.preview.getBoundingClientRect(), this.profile)
       if (!point) return
@@ -971,7 +1021,7 @@ export const OnroadLayoutPage = {
     },
     resizeBox(id, width, height, group = null) {
       if (!this.editable) return false
-      const position = this.layout[id], next = clampBox(this.profile, id, position, width, height)
+      const position = this.layout[id], next = clampBox(this.limitProfile, id, position, width, height)
       if (!next) return false
       const before = this.state.drag ? null : clone(this.state.draft)
       Object.assign(position, next)
@@ -990,7 +1040,7 @@ export const OnroadLayoutPage = {
       if (!this.editable || this.state.drag || this.state.layerDrag || !range || !Number.isInteger(size) || size < range.min || size > range.max) return
       const before = clone(this.state.draft), position = this.selectedPosition, previous = position.size
       position.size = size
-      const next = clampPlacement(this.profile, this.state.selected, position.x, position.y, this.layout)
+      const next = clampPlacement(this.limitProfile, this.state.selected, position.x, position.y, this.layout)
       if (next) {
         Object.assign(position, next)
         this.recordChange(before, this.state.profile + ":" + this.state.selected + ":size")
@@ -1019,6 +1069,14 @@ export const OnroadLayoutPage = {
       this.finishColorEdit()
       const before = clone(this.state.draft)
       this.selectedPosition.background = value === 'On'
+      this.recordChange(before)
+      this.state.notice = ""
+    },
+    setWidgetCollapse(value) {
+      if (!this.editable || this.state.drag || this.state.layerDrag || !this.selectedWidget?.collapseToggle) return
+      this.finishColorEdit()
+      const before = clone(this.state.draft)
+      this.selectedPosition.collapse = value === 'On'
       this.recordChange(before)
       this.state.notice = ""
     },
@@ -1053,16 +1111,16 @@ export const OnroadLayoutPage = {
           const [width, height] = widgetSize(this.profile.widgets[drag.id], this.layout[drag.id])
           drag.targets ||= this.previewSnapTargets(drag.id)
           // Pushing past an edge parks the widget on it, so snap from where the clamp will leave it.
-          const { minX, maxX, minY, maxY } = placementLimits(this.profile, drag.id, this.layout)
+          const { minX, maxX, minY, maxY } = placementLimits(this.limitProfile, drag.id, this.layout)
           const inside = { x: Math.max(minX, Math.min(maxX, raw.x)), y: Math.max(minY, Math.min(maxY, raw.y)) }
           const snapped = snapMove({ ...inside, width, height }, drag.targets, snapThreshold(this.profile, rect, event.pointerType))
-          const clamped = clampPlacement(this.profile, drag.id, snapped.x, snapped.y, this.layout)
+          const clamped = clampPlacement(this.limitProfile, drag.id, snapped.x, snapped.y, this.layout)
           if (clamped) {
             next = snapped
             if (clamped.x === Math.round(snapped.x) && clamped.y === Math.round(snapped.y)) this.state.snapGuides = snapped.guides
           }
         }
-        if (drag.fromTray) drag.inside = clampPlacement(this.profile, drag.id, next.x, next.y, this.layout) !== null
+        if (drag.fromTray) drag.inside = clampPlacement(this.limitProfile, drag.id, next.x, next.y, this.layout) !== null
         this.changePosition(drag.id, next.x, next.y)
       }
       if (drag.fromTray) this.layout[drag.id].enabled = drag.inside

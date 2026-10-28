@@ -44,7 +44,8 @@ class DesireHelper:
       self.auto_signal_blocked = True
     self.last_signal_direction = signal_direction
     self.auto_status = "manualRequired"
-    below_lane_change_speed = v_ego < max(MINIMUM_SPEED_MPS, self.policy.minimum_speed_mps)
+    below_lane_change_speed = v_ego < max(MINIMUM_SPEED_MPS, self.policy.minimum_speed_mps,
+                                          20 * CV.MPH_TO_MS if self.policy.turn_signal_guidance else 0.0)
 
     if not self.policy.enabled or not lateral_active or below_lane_change_speed or self.lane_change_timer > LANE_CHANGE_TIME_MAX:
       self.lane_change_state = LaneChangeState.off

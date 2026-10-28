@@ -1,4 +1,5 @@
 import { GxNotice } from "./notice.js"
+import { beginSave, finishSave } from "./save-feedback.js"
 export const validDriveState = (value) => !!value && ["auto", "offroad", "onroad"].includes(value.mode) &&
   typeof value.available === "boolean" && typeof value.overrideAllowed === "boolean" &&
   (value.revision === null || typeof value.revision === "string" && /^[0-9a-f]{32}$/.test(value.revision)) &&
@@ -6,6 +7,7 @@ export const validDriveState = (value) => !!value && ["auto", "offroad", "onroad
 
 export const DriveStatePanel = {
   components: { GxNotice },
+  props: { offroadOnly: { type: Boolean, default: false } },
   data: () => ({ state: null, error: "", busy: false }),
   computed: {
     pending() { return this.state?.mode !== "auto" && this.state?.effective !== this.state?.mode },
@@ -35,7 +37,8 @@ export const DriveStatePanel = {
     },
     async change(mode) {
       if (this.busy || !this.state?.available) return
-      if (!["onroad", "auto"].includes(mode)) return
+      if (!["onroad", "offroad", "auto"].includes(mode)) return
+      const feedback = beginSave()
       const revision = this.state.revision
       this.busy = true
       this.loading = false
@@ -49,20 +52,24 @@ export const DriveStatePanel = {
           signal: this.controller.signal, headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, revision }) })
         const value = await response.json()
         if (!response.ok || !validDriveState(value)) throw new Error(value.error || "Drive state unavailable")
-        if (this.active && generation === this.generation) { this.state = value; this.error = "" }
-      } catch (error) { if (this.active && generation === this.generation) this.error = error.message }
+        if (this.active && generation === this.generation) { this.state = value; this.error = ""; finishSave(feedback, true) }
+      } catch (error) { if (this.active && generation === this.generation) this.error = error.message; finishSave(feedback, false) }
       finally { clearTimeout(deadline); this.busy = false; if (this.active && generation === this.generation) this.load() }
     },
   },
-  template: `<section class="gx-card gx-force-drive" aria-label="Force Drive State" :inert="busy" :aria-busy="busy || undefined"><h3>Force Drive State</h3>
+  template: `<section class="gx-card gx-force-drive" aria-label="Force Drive State" :inert="busy" :aria-busy="busy || undefined"><div class="gx-section__header"><i class="bi bi-car-front" aria-hidden="true"></i><span class="gx-section__title">Force Drive State</span></div><div class="gx-panel">
     <GxNotice tone="danger" v-if="error">{{ error }}</GxNotice>
     <GxNotice tone="danger" v-if="state && !state.available">The drive-state manager is unavailable. Reconnect to check again.</GxNotice>
     <GxNotice v-if="pending" tone="info">Waiting for the device to switch {{ state.mode }}…</GxNotice>
     <p>Device: {{ state?.effective === "onroad" ? "Onroad" : state?.effective === "offroad" ? "Offroad" : "Checking…" }}</p>
-    <p>Auto follows the car. Force Onroad starts driving services at any time. Return to Auto restores normal operation.</p>
-    <div class="gx-force-drive__actions gx-actions"><button v-for="mode in ['onroad', 'auto']" :key="mode" type="button"
+    <p v-if="!offroadOnly">Auto follows the car. Force Onroad starts driving services at any time. Return to Auto restores normal operation.</p>
+    <label v-if="offroadOnly" class="gx-row"><span>Force Offroad</span><input type="checkbox" role="switch"
+      :checked="state?.mode === 'offroad'" :disabled="!state?.available"
+      @change="change($event.target.checked ? 'offroad' : 'auto')" /></label>
+    <p v-if="offroadOnly" class="gx-note">Park the vehicle and disengage controls to enable. Turn off to restore automatic drive state.</p>
+    <div v-if="!offroadOnly" class="gx-force-drive__actions gx-actions"><button v-for="mode in ['onroad', 'auto']" :key="mode" type="button"
       class="gx-btn" :class="state?.mode === mode ? '' : 'gx-btn--tonal'"
       :disabled="!state?.available"
       :aria-pressed="state?.mode === mode" @click="change(mode)">{{ mode === 'auto' ? 'Return to Auto' : 'Onroad' }}</button></div>
-    </section>`,
+    </div></section>`,
 }
