@@ -6,10 +6,12 @@ import pytest
 
 from opendbc.car import gen_empty_fingerprint, structs
 from opendbc.car.can_definitions import CanData
-from opendbc.car.honda.bosch_a_radar import bosch_a_range_offset_m
+from opendbc.car.honda.bosch_a_radar import (BOSCH_A_ALT_RADAR_CARS, VERIFIED_BOSCH_A_CARS, bosch_a_range_offset_m,
+                                              bosch_a_radar_platform)
 from opendbc.car.honda.hondacan import CanBus
 from opendbc.car.honda.interface import CarInterface
 from opendbc.car.honda.radar_interface import RadarInterface
+from opendbc.car.honda.stock_aol import ALT_RADAR_STOCK
 from opendbc.car.honda.values import CAR
 
 BOSCH_A_DIRECT_VREL_INVALID = 0x7FE
@@ -97,8 +99,19 @@ def test_wrong_bus_cannot_create_radar_points(identity):
   assert not ri.bosch_a.pts
 
 
-@pytest.mark.parametrize("identity", (CAR.HONDA_CIVIC_2022, CAR.HONDA_ACCORD_11G, CAR.HONDA_HRV_3G, CAR.ACURA_RDX_3G_MMR))
-def test_unverified_bosch_factory_has_no_radar_decoder(identity):
+def test_verified_bosch_a_cars_are_all_platform_cars():
+  expected = frozenset(c for c in CAR if bosch_a_radar_platform(c))
+  assert VERIFIED_BOSCH_A_CARS == expected
+  assert CAR.ACURA_RDX_3G in VERIFIED_BOSCH_A_CARS
+  assert CAR.HONDA_ACCORD in VERIFIED_BOSCH_A_CARS
+  assert CAR.ACURA_RDX_3G_MMR in VERIFIED_BOSCH_A_CARS
+  assert CAR.HONDA_CIVIC_2022 not in VERIFIED_BOSCH_A_CARS
+  assert BOSCH_A_ALT_RADAR_CARS == frozenset(c for c in ALT_RADAR_STOCK if bosch_a_radar_platform(c))
+  assert ALT_RADAR_STOCK <= VERIFIED_BOSCH_A_CARS
+
+
+@pytest.mark.parametrize("identity", (CAR.HONDA_CIVIC_2022, CAR.HONDA_ACCORD_11G, CAR.HONDA_HRV_3G, CAR.ACURA_MDX_4G_MMR))
+def test_non_bosch_a_platform_factory_has_no_radar_decoder(identity):
   cp = CarInterface.get_params(identity, gen_empty_fingerprint(), [], False, False, False)
   assert cp.radarUnavailable
   assert RadarInterface(cp).rcp is None

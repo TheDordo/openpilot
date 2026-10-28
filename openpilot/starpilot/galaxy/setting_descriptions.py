@@ -41,10 +41,10 @@ DESCRIPTIONS = {
   'UseStarPilotLongitudinalPlanner': 'Selects the StarPilot acceleration, braking and following planner. Off selects the upstream planner.',
   'BoschAStockBrakeFeel': ('Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. ' +
                            'It never brakes harder than the planner asks and works with either planner. ' +
-                           'It acts only on verified Bosch-A Hondas with openpilot longitudinal.'),
+                           'It acts only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.'),
   'BoschAHumanFollowing': ('Follows the driving model\u2019s predicted path for the car ahead instead of a straight-line guess, and ' +
                            'eases acceleration at low set speeds and near the set speed. It works with either planner and acts ' +
-                           'only on verified Bosch-A Hondas with openpilot longitudinal.'),
+                           'only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.'),
   'CustomCruise': 'Sets how much a short cruise-button press changes the set speed.',
   'CustomCruiseLong': 'Sets how much holding a cruise button changes the set speed.',
   'ReverseCruise': 'Swaps the Toyota short-press and held-press cruise-speed increments.',

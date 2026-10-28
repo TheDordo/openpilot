@@ -6,7 +6,7 @@
 Like UseStarPilotLongitudinalPlanner, the values are latched for the life of the plannerd process, so a change
 applies on the next drive. Only an exact saved "1" turns a feature on; a missing, unreadable or malformed value is
 Off. A toggle only arms its feature: each one still applies its own car gate (honda_bosch_a_long.active_for,
-human_following.enabled_for), so a car that is not a verified Bosch-A Honda with openpilot longitudinal is unaffected.
+human_following.enabled_for), so a car that is not on a Bosch-A platform (classic or alt-radar stock) with openpilot longitudinal is unaffected.
 """
 from dataclasses import dataclass
 
@@ -40,8 +40,8 @@ def read_toggles(params) -> BoschAToggles:
 
 
 def vehicle_supported(CP) -> bool:
-  """Settings-row gate: a Honda with a verified Bosch-A radar and openpilot longitudinal. The planners still apply their
-  own gates; this only decides whether the rows can be turned on."""
+  """Settings-row gate: a Honda on a Bosch-A platform (honda_bosch_a_radar, including alt-radar stock) with openpilot
+  longitudinal. The planners still apply their own gates; this only decides whether the rows can be turned on."""
   if CP is None:
     return False
   try:

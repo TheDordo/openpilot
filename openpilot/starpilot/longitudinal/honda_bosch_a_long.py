@@ -1,7 +1,8 @@
 """Honda Bosch A Long Enhancement: longitudinal behaviour that is active whenever the Bosch-A radar is on.
 
 Ported from openpilot-radar (ns-bosch-radar-testing @ 567495f4ad + 6db22115e8, selfdrive/controls/lib/longitudinal_planner.py).
-Active only when `active_for(CP)`: a Honda in VERIFIED_BOSCH_A_CARS with openpilot longitudinal and the radar not
+Active only when `active_for(CP)`: a Honda on a Bosch-A platform (VERIFIED_BOSCH_A_CARS, same as
+`bosch_a_radar_platform`, including alt-radar stock) with openpilot longitudinal and the radar not
 disabled (`HondaBoschARadar`), which is the same gate radard uses to build BoschALeadPolicy. Each part also has its own
 switch: Stock Brake Feel is the owner toggle `BoschAStockBrakeFeel` (bosch_a_toggles.py, default Off, read once when
 plannerd starts and passed in as `stock_brake_feel`); STOP_EASE_ENABLED, RADAR_LEAD_RECOVERY and BIRTH_RAIL_ENABLED are
@@ -79,7 +80,7 @@ RADAR_LEAD_RECOVERY = False
 
 
 def active_for(CP) -> bool:
-  """Same gate as radard's BoschALeadPolicy: verified Bosch-A Honda, radar on, openpilot longitudinal."""
+  """Same gate as radard's BoschALeadPolicy: Bosch-A Honda (classic or alt-radar), radar on, openpilot longitudinal."""
   from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
   return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and not CP.radarUnavailable and
               CP.openpilotLongitudinalControl)

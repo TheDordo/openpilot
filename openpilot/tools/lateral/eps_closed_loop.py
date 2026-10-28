@@ -68,9 +68,14 @@ def read_route(pattern):
           S['ctl'].append((t, e.controlsState.lateralControlState.pidState.steeringAngleDesiredDeg))
         elif w == 'liveParameters':
           S['lp'].append((t, e.liveParameters.angleOffsetDeg, e.liveParameters.roll))
+        elif w == 'vehicleParameters':
+          vp = e.vehicleParameters
+          S['lp'].append((t, vp.angleOffsetDeg, vp.roll))
     except Exception:
       pass
-  A = {k: np.array(sorted(v), float) for k, v in S.items()}
+  A = {k: np.array(sorted(v), float) if v else np.empty(0) for k, v in S.items()}
+  if A['cs'].size == 0:
+    raise ValueError(f'no carState in {pattern!r}')
   t = A['cs'][:, 0]
 
   def at(arr, col):

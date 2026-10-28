@@ -703,18 +703,30 @@ def _create_bosch_a_can_parser(CP):
   return CANParser(DBC[CP.carFingerprint][Bus.radar], messages, CanBus(CP).camera)
 
 
-VERIFIED_BOSCH_A_CARS = frozenset((CAR.HONDA_CIVIC_BOSCH, CAR.HONDA_CRV_5G))
+def bosch_a_alt_radar_car(car_fingerprint: str) -> bool:
+  """Bosch harness with BOSCH_ALT_RADAR (stock AOL family); same Bosch-A object bank, different ACC integration."""
+  if car_fingerprint not in CAR:
+    return False
+  flags = int(CAR[car_fingerprint].config.flags)
+  return (bool(flags & HondaFlags.BOSCH) and bool(flags & HondaFlags.BOSCH_ALT_RADAR) and
+          not bool(flags & HondaFlags.BOSCH_CANFD))
 
 
 def bosch_a_radar_platform(car_fingerprint: str) -> bool:
-  """Plain Bosch-A harness cars wired to the hand-written honda_bosch_a_radar DBC."""
+  """Bosch-A object-bank cars wired to honda_bosch_a_radar (classic harness and alt-radar stock)."""
   if car_fingerprint not in CAR:
     return False
   if DBC.get(car_fingerprint, {}).get(Bus.radar) != BOSCH_A_DBC_NAME:
     return False
   flags = int(CAR[car_fingerprint].config.flags)
-  unsupported = int(HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD | HondaFlags.BOSCH_ALT_RADAR)
+  unsupported = int(HondaFlags.BOSCH_RADARLESS | HondaFlags.BOSCH_CANFD)
   return bool(flags & HondaFlags.BOSCH) and not bool(flags & unsupported)
+
+
+BOSCH_A_ALT_RADAR_CARS = frozenset(c for c in CAR if bosch_a_alt_radar_car(c) and bosch_a_radar_platform(c))
+
+# Same set as bosch_a_radar_platform: honda_bosch_a_radar wired, not radarless / CANFD.
+VERIFIED_BOSCH_A_CARS = frozenset(c for c in CAR if bosch_a_radar_platform(c))
 
 
 class BoschARadar(RadarInterfaceBase):

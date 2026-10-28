@@ -1144,7 +1144,7 @@ class FeatureSettingsOwner:
           (BOSCH_A_STOCK_BRAKE_FEEL_KEY, "Stock Brake Feel (Bosch-A)",
            ("Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. " +
             "It never brakes harder than the planner asks. Works with either planner. Changes apply on the next drive. " +
-            "Acts only on verified Bosch-A Hondas with openpilot longitudinal.")),
+            "Acts only on Bosch-A Hondas (classic and alt-radar) with openpilot longitudinal.")),
           (BOSCH_A_HUMAN_FOLLOWING_KEY, "Human Following (Bosch-A)",
            ("Follows the driving model's predicted path for the car ahead instead of a straight-line guess, and eases " +
             "acceleration at low set speeds and near the set speed. Works with either planner. Changes apply on the next drive. " +

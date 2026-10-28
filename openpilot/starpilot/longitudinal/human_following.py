@@ -36,7 +36,7 @@ MIN_CLOSING_SPEED = 0.75
 
 
 def enabled_for(CP, toggle: bool = False) -> bool:
-  """The toggle is on and the car is a Honda with a verified Bosch-A radar and openpilot longitudinal, radar on or off
+  """The toggle is on and the car is a Bosch-A Honda (classic or alt-radar stock) with openpilot longitudinal, radar on or off
   (vision-only shares it)."""
   if toggle is not True:
     return False

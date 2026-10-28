@@ -133,7 +133,9 @@ CIVIC_TBA_C020_LAT_DELAY_SCHEDULE = ((3.5, 7.0, 12.0, 20.0, 30.0), (0.28, 0.28, 
 # - RDX TJB-A220 (2026-10-23, town): route 0000000b segments 6-9 at 12-20 m/s on turning samples, schedule ~0.19 s
 #   (0.26 s from the frame); the Clarity's 0.08-0.10 s at 7-12 m/s ran ~65 ms short there. Crawl (3.5 m/s) still the
 #   Clarity's 0.15 s until a parking-lot drive measures it.
-RDX_TJB_A220_LAT_DELAY_SCHEDULE = ((3.5, 7.0, 12.0, 20.0, 30.0), (0.15, 0.16, 0.18, 0.17, 0.17))
+# - RDX TJB-A220 (2026-10-28, mixed): route 00000005 eps_report timing had the car 52 ms late vs the schedule at 9-15
+#   m/s and 32 ms at 15-25 m/s (plan model, night-star7); the 12 and 20 m/s knots move up 0.02 s, highway unchanged.
+RDX_TJB_A220_LAT_DELAY_SCHEDULE = ((3.5, 7.0, 12.0, 20.0, 30.0), (0.15, 0.16, 0.20, 0.19, 0.17))
 
 # Civic Bosch 39990-TBA-C020, the CORRECTED Proper Torque Mod of 2026-10-16, revision b (RWD sha256 df67bf6f; KB
 # PTM_FIX_FAMILY_20261016/out/C020, independent_verify 48/48, brick_check 70/70), a data-only fix of nrdr's Drive
@@ -391,8 +393,10 @@ RDX_TJB_A220_LOAD = ColumnLoadModel(k0=-11.19, k1=-0.1363, c=-2.479, friction=-2
 # 0.39 deg, with 0.1-0.5 Hz tracking unchanged (1.05 -> 1.06). Rejected there: the output LPF (default taus: 1.41 on
 # the freeway, 2.13 at 9-20 m/s, its lag costs more than it smooths), a D term on the measured rate (unstable in some
 # windows at 0.002-0.006), and P alone (x0.6: 1.10, but tracking 0.40 deg).
-RDX_TJB_A220_P_SCALE = (1.0, 1.0, 0.7)
-RDX_TJB_A220_FRICTION_WIDTH_V = (20.0, 15.0)
+# Route 00000005 (2026-10-28): below 25 mph in 20-90 deg turns, tracking gain 1.06 and RMS 4.2 deg at 5-9 m/s; P x0.88
+# there and a 22 deg/s town friction knee (was 20) tame the loop without touching highway trims.
+RDX_TJB_A220_P_SCALE = (0.88, 1.0, 0.7)
+RDX_TJB_A220_FRICTION_WIDTH_V = (22.0, 15.0)
 ACURA_RDX_TJB_A220 = EpsFirmwareCalibration(
   name="rdx_tjb_a220", e4_per_output=4096.0,
   r5_key_bp=tuple(round(a * _RDX_A) for a in (0, 128, 256, 384, 512, 640, 768, 896, 1024)),
@@ -521,9 +525,9 @@ CALIBRATION_PROVENANCE = {
     "kp_axis": "firmware", "key_clamp": "firmware", "envelope": "firmware",
     "r6": "firmware: ref = 32 x its 0x18F rate word (0x1C668 / 0x1D300) x 0.4812 (the build); the word measured at 7.8 per deg/s on routes b8/c7/cc/d2",
     "load": "measured: the owner's routes 000000c6 / c7 / cc / d2 (a 2019), rebuilt through the law from the sent 0xE4; the MMR takes it",
-    "trims": "measured: closed-loop replay of routes cc / d2 (P x0.7 above 50 mph, a 15 deg/s friction knee at speed)",
+    "trims": "measured: closed-loop replay cc/d2; route 00000005 P x0.88 below 25 mph, 22 deg/s town friction knee",
     "cmd_delay": "measured: plan_timing on this controller, routes cc / d2: on time at 5-12 m/s (+0.04 / +0.03 s), so the default stands",
-    "model_delay": "measured: 12 m/s and up, routes 00000003 / 00000004 / 0000000b on this controller; the Clarity's at crawl",
+    "model_delay": "measured: 12 m/s and up, routes 00000003 / 00000004 / 0000000b; route 00000005 +0.02 s at 12 and 20 m/s knots",
     "rack": "measured: VSA yaw (GPS-checked scale), routes 000000b8 / c6 / c7 / cc / d2 (a 2019; the MMR takes it), through its road-measured linear map",
   },
   "crv_tla_a220": {

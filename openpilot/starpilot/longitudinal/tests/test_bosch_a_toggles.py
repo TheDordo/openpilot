@@ -25,7 +25,7 @@ def car(fingerprint='HONDA_CIVIC_BOSCH', brand='honda', long=True, radar_unavail
 
 
 BOSCH_A = car()
-NOT_BOSCH_A = (car('TOYOTA_RAV4_TSS2_2023', brand='toyota'), car('HONDA_ACCORD'), car(long=False))
+NOT_BOSCH_A = (car('TOYOTA_RAV4_TSS2_2023', brand='toyota'), car('HONDA_CIVIC'), car('HONDA_ACCORD_11G'), car(long=False))
 
 
 class FileParams:
@@ -176,6 +176,8 @@ class TestCarGates(unittest.TestCase):
 
   def test_settings_row_gate(self):
     self.assertTrue(bosch_a_toggles.vehicle_supported(BOSCH_A))
+    self.assertTrue(bosch_a_toggles.vehicle_supported(car('ACURA_RDX_3G')))
+    self.assertTrue(bosch_a_toggles.vehicle_supported(car('ACURA_RDX_3G_MMR')))
     self.assertFalse(bosch_a_toggles.vehicle_supported(None))
     for cp in NOT_BOSCH_A:
       self.assertFalse(bosch_a_toggles.vehicle_supported(cp), cp)

@@ -87,7 +87,7 @@ def test_its_feedback_is_the_word_derived_value():
 
 
 def test_its_trims_come_from_the_closed_loop_replay():
-  # P x0.7 above 50 mph and a 15 deg/s friction knee at speed (see RDX_TJB_A220_P_SCALE); I and town untouched
-  assert CAL.p_scale == (1.0, 1.0, 0.7) and CAL.i_scale == (1.0, 1.0, 1.0)
-  assert CAL.friction_width_v == (20.0, 15.0)
+  # P x0.88 below 25 mph, x0.7 above 50 mph; 22 / 15 deg/s friction knees (see RDX_TJB_A220_* and route 00000005)
+  assert CAL.p_scale == (0.88, 1.0, 0.7) and CAL.i_scale == (1.0, 1.0, 1.0)
+  assert CAL.friction_width_v == (22.0, 15.0)
   assert eps_cal.provenance(CAL)["trims"].startswith("measured: closed-loop replay")
