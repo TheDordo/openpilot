@@ -178,6 +178,9 @@ class TestCarGates(unittest.TestCase):
     self.assertTrue(bosch_a_toggles.vehicle_supported(BOSCH_A))
     self.assertTrue(bosch_a_toggles.vehicle_supported(car('ACURA_RDX_3G')))
     self.assertTrue(bosch_a_toggles.vehicle_supported(car('ACURA_RDX_3G_MMR')))
+    rdx_pcm = car('ACURA_RDX_3G', long=False)
+    rdx_pcm.alphaLongitudinalAvailable = True
+    self.assertTrue(bosch_a_toggles.vehicle_supported(rdx_pcm))
     self.assertFalse(bosch_a_toggles.vehicle_supported(None))
     for cp in NOT_BOSCH_A:
       self.assertFalse(bosch_a_toggles.vehicle_supported(cp), cp)

@@ -1140,6 +1140,19 @@ class FeatureSettingsOwner:
       rows.append(self._bool_row(PLANNER_SELECTION_KEY, "Use StarPilot Longitudinal Planner", self.authority("preferences"),
                                  reason="Off uses the upstream planner. Supported longitudinal control stays active. Changes apply on the next drive."))
       bosch_a_supported = bosch_a_vehicle_supported(self.vehicle_params())
+      bosch_a_cp = self.vehicle_params()
+      bosch_a_block = ""
+      if not bosch_a_supported and bosch_a_cp is not None:
+        try:
+          from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
+          if bosch_a_cp.brand == "honda" and bosch_a_cp.carFingerprint not in VERIFIED_BOSCH_A_CARS:
+            bosch_a_block = (" Unavailable: the settings vehicle is not a verified Bosch-A Honda — set Vehicle Selection "
+                             "to Auto or ACURA_RDX_3G / ACURA_RDX_3G_MMR and refresh this page.")
+          elif not getattr(bosch_a_cp, "openpilotLongitudinalControl", False):
+            bosch_a_block = (" Unavailable until StarPilot controls speed: enable Alpha Longitudinal under Vehicle Settings, "
+                             "restart, then refresh this page.")
+        except Exception:
+          pass
       for bosch_a_key, bosch_a_label, bosch_a_reason in (
           (BOSCH_A_STOCK_BRAKE_FEEL_KEY, "Stock Brake Feel (Bosch-A)",
            ("Shapes how braking builds and lets off using the stock Honda ACC timing, so braking feels closer to stock. " +
@@ -1151,7 +1164,7 @@ class FeatureSettingsOwner:
             "Acts only on verified Bosch-A Hondas with openpilot longitudinal."))):
         bosch_a_enabled, _, _ = self._value(bosch_a_key)
         rows.append(self._bool_row(bosch_a_key, bosch_a_label, self.authority("preferences") and
-                                   (bosch_a_supported or bosch_a_enabled == "1"), reason=bosch_a_reason))
+                                   (bosch_a_supported or bosch_a_enabled == "1"), reason=bosch_a_reason + bosch_a_block))
       allowed = configurable and system_long
       if self.show_cruise_intervals or toyota_cruise_capability(self.vehicle_params()) is not None:
         rows.extend(self._cruise_rows(configurable))

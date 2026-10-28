@@ -40,12 +40,17 @@ def read_toggles(params) -> BoschAToggles:
 
 
 def vehicle_supported(CP) -> bool:
-  """Settings-row gate: a Honda on a Bosch-A platform (honda_bosch_a_radar, including alt-radar stock) with openpilot
-  longitudinal. The planners still apply their own gates; this only decides whether the rows can be turned on."""
+  """Settings-row gate: verified Bosch-A Honda that can use StarPilot longitudinal (active now or after Alpha Long).
+
+  The planner hooks still require openpilotLongitudinalControl at runtime; this only controls whether the saved
+  toggles can be edited."""
   if CP is None:
     return False
   try:
     from opendbc.car.honda.bosch_a_radar import VERIFIED_BOSCH_A_CARS
-    return bool(CP.brand == "honda" and CP.carFingerprint in VERIFIED_BOSCH_A_CARS and CP.openpilotLongitudinalControl)
+    if CP.brand != "honda" or CP.carFingerprint not in VERIFIED_BOSCH_A_CARS:
+      return False
+    alpha_ready = bool(getattr(CP, "openpilotLongitudinalControl", False) or getattr(CP, "alphaLongitudinalAvailable", False))
+    return alpha_ready
   except Exception:
     return False
