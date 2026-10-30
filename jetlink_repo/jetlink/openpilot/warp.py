@@ -1,4 +1,4 @@
-﻿"""
+"""
 Copyright (c) 2026-, Zeph Leggett.
 
 This file is part of jetlink and is licensed under the MIT License.
