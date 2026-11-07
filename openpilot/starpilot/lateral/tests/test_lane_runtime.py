@@ -600,3 +600,11 @@ class LaneRuntimeTests(unittest.TestCase):
         self.assertFalse(command.longActive)
       assert controls.last_lane_centering_result is not None
       self.assertGreater(controls.last_lane_centering_result.correction, 0.0)
+
+  def test_blendful_disables_star_pilot_lane_centering(self):
+    with OpenpilotPrefix():
+      params = Params()
+      params.put_bool('LaneCentering', True, block=True)
+      params.put_bool('Blendful', True, block=True)
+      settings = read_settings(params)
+      self.assertFalse(settings.enabled)

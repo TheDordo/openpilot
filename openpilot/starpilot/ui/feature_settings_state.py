@@ -48,6 +48,7 @@ class FeaturePage(StrEnum):
   VEHICLE = "vehicle"
   SLC = "slc"
   LANE = "lane"
+  BLENDFUL = "blendful"
   LANE_CHANGE = "lane_change"
   PROFILES = "profiles"
   AGGRESSIVE = "aggressive"

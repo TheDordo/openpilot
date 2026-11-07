@@ -25,6 +25,8 @@ def read_settings(params) -> LaneCenteringSettings:
     return value == b'1'
 
   try:
+    if boolean('Blendful', b'0'):
+      return LaneCenteringSettings()
     enabled = boolean('LaneCentering', b'0')
     pause = boolean('LaneCenteringPauseOnSignal', b'1')
     offset = float(raw('LaneCenterOffset', b'0.0'))

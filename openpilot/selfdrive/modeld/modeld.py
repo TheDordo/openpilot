@@ -495,7 +495,7 @@ def main(demo=False):
   lane_status_sequence = 0
   from openpilot.starpilot.models.blendful import Blendful, blendful_inputs_ready
   blendful = Blendful()
-  blendful_enabled = params.get_bool("Blendful")
+  blendful_enabled = params.get_bool("Blendful") and not params.get_bool("LaneCentering")
 
   while True:
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
@@ -532,7 +532,7 @@ def main(demo=False):
 
     sm.update(0)
     if run_count % 60 == 0:
-      blendful_enabled = params.get_bool("Blendful")
+      blendful_enabled = params.get_bool("Blendful") and not params.get_bool("LaneCentering")
     turn_supported = bool(model.npy.get('desire') is not None and model.npy['desire'].shape[-1] == 8)
     desire = navigation_turn.select(sm, time.monotonic_ns(), DH.desire,
                                      supported=turn_supported, model_stop=bool(prev_action.shouldStop),

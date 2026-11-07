@@ -123,7 +123,8 @@ AOL_THRESHOLD = "AolBrakePauseSpeedMps"
 AOL_LEGACY_THRESHOLD = "PauseAOLOnBrake"
 TORQUE_NUMBERS = LEGACY_KEYS
 LANE_LIVE_KEYS = frozenset(("LaneCentering", "LaneCenteringPauseOnSignal", "LaneCenterOffset",
-                            "LaneCenteringE2EAuthority", "LaneCenteringStrength", "Blendful"))
+                            "LaneCenteringE2EAuthority", "LaneCenteringStrength"))
+BLENDFUL_LIVE_KEYS = frozenset(("Blendful",))
 CURVE_KEYS = frozenset((CURVE_MASTER_KEY, CURVE_NO_LEAD_KEY))
 CURVE_PAGE_KEYS = CURVE_KEYS | {"ShowCSCStatus"}
 CRUISE_KEYS = frozenset(("CustomCruise", "CustomCruiseLong"))
@@ -814,7 +815,8 @@ class FeatureSettingsOwner:
                       configure_while_driving: bool = False) -> FeatureSettingsState:
     del metric  # The persisted unit file, including invalid bytes, owns offset labels.
     configurable = parked or configure_while_driving
-    title = {FeaturePage.HUB: "Driving Controls", FeaturePage.LANE: "Lane Centering"}.get(page, page.replace("_", " ").title())
+    title = {FeaturePage.HUB: "Driving Controls", FeaturePage.LANE: "Lane Centering",
+             FeaturePage.BLENDFUL: "Blendful"}.get(page, page.replace("_", " ").title())
     rows: list[FeatureRow] = []
     if page == "data":
       title = "Data Uploads"
@@ -823,7 +825,8 @@ class FeatureSettingsOwner:
     elif page == FeaturePage.HUB:
       rows = [FeatureRow("", "Curve Speed Controller", "Adjust how speed is reduced for curves ahead", page=FeaturePage.CURVE, available=True),
               FeatureRow("", "Speed Limit Controller", "Choose speed-limit sources, offsets, and confirmation behavior", page=FeaturePage.SLC, available=True),
-              FeatureRow("", "Lane Centering", "Adjust lane positioning, lane detection, and steering alerts", page=FeaturePage.LANE, available=True),
+              FeatureRow("", "Lane Centering", "StarPilot lane centering from detected lane lines", page=FeaturePage.LANE, available=True),
+              FeatureRow("", "Blendful", "Model-path lane centering (separate from StarPilot Lane Centering)", page=FeaturePage.BLENDFUL, available=True),
               FeatureRow("", "Lane Changes", "Configure lane-change speed, automatic timing, and driver nudges", page=FeaturePage.LANE_CHANGE, available=True),
               FeatureRow("", "Long Planner", "Tune acceleration, braking, and following distances", page=FeaturePage.PROFILES, available=True),
               FeatureRow("", "Conditional Driving Modes", "Choose when to switch between Chill and Experimental", page=FeaturePage.CONDITIONAL, available=True),
@@ -1124,28 +1127,35 @@ class FeatureSettingsOwner:
       from openpilot.starpilot.lateral.lane_runtime import runtime_supported
       strength_supported = runtime_supported(self.vehicle_params())
       allowed = strength_supported and ((configurable and lateral_context) or (not parked and self.authority("lane_live")))
+      blendful_on = self._value("Blendful")[0] == "1"
+      lane_centering_allowed = allowed and not blendful_on
       lane_enabled, _, _ = self._value("LaneCentering")
-      rows.extend((self._bool_row("LaneCentering", "Enable Lane Centering", allowed),
-                   replace(self._bool_row("LaneCenteringPauseOnSignal", "Pause on signal", allowed and lane_enabled == "1"),
+      lane_reason = "Turn off Blendful first; it is a separate lane-centering system." if blendful_on else None
+      rows.extend((replace(self._bool_row("LaneCentering", "Enable Lane Centering", lane_centering_allowed),
+                             reason=lane_reason),
+                   replace(self._bool_row("LaneCenteringPauseOnSignal", "Pause on signal", lane_centering_allowed and lane_enabled == "1"),
                            default_reset_available=allowed and parked and self._value("LaneCenteringPauseOnSignal")[2] and
                            self._value("LaneCenteringPauseOnSignal")[0] in ("0", "1")),
-                   self._number_row("LaneCenterOffset", "Lane offset", allowed),
-                   replace(self._number_row("LaneCenteringE2EAuthority", "Model path preference", allowed, scale=100, unit="%"),
+                   self._number_row("LaneCenterOffset", "Lane offset", lane_centering_allowed),
+                   replace(self._number_row("LaneCenteringE2EAuthority", "Model path preference", lane_centering_allowed, scale=100, unit="%"),
                            reason="Higher values let a confident model path reduce lane-centering correction when it differs from the lane center")))
       strength_row = self._number_row("LaneCenteringStrength", "Lane Centering Strength",
-                                      allowed and strength_supported, scale=100 / STRENGTH_BASELINE, unit="%")
+                                      lane_centering_allowed and strength_supported, scale=100 / STRENGTH_BASELINE, unit="%")
       rows.append(replace(strength_row,
                           value=str(round(float(strength_row.value))) if strength_row.step > 0 else strength_row.value,
                           default_value=str(round(float(strength_row.default_value))) if strength_row.default_value is not None else None,
                           minimum=33, maximum=round(STRENGTH_MAX / STRENGTH_BASELINE * 100), step=1 if strength_row.step > 0 else 0,
                           reason="100% is normal; lower values reduce centering and higher values strengthen it" if strength_supported else
                           "Not available with this vehicle configuration"))
+    elif page == FeaturePage.BLENDFUL:
       blendful_allowed = self._blendful_catalog_available()
-      blendful_row = self._bool_row("Blendful", "Blendful (alpha)", allowed and blendful_allowed)
-      rows.append(replace(blendful_row,
-                          reason=("Adds a gentle nudge toward lane center on top of the model's steering, "
-                                  "stronger when lane lines are clear.")
-                          if blendful_allowed else "Select a non-default Small or Big model to use Blendful."))
+      lane_on = self._value("LaneCentering")[0] == "1"
+      allowed = blendful_allowed and ((configurable and lateral_context) or (not parked and self.authority("lane_live")))
+      blendful_allowed_on = allowed and not lane_on
+      reason = ("Select a non-default Small or Big model to use Blendful." if not blendful_allowed else
+                "Turn off StarPilot Lane Centering first; Blendful replaces it with model-path centering." if lane_on else
+                "Nudges steering toward lane center inside modeld. Not used with StarPilot Lane Centering.")
+      rows.append(replace(self._bool_row("Blendful", "Enable Blendful", blendful_allowed_on), reason=reason))
     elif page == FeaturePage.LANE_CHANGE:
       title = "Lane Changes"
       rows.extend(self.lane_changes.rows(parked))
@@ -1482,8 +1492,11 @@ class FeatureSettingsOwner:
         group = "preferences"
       elif key in LANE_LIVE_KEYS and not self.authority("lane"):
         group = "lane_live"
+      elif key in BLENDFUL_LIVE_KEYS and not self.authority("lane"):
+        group = "lane_live"
       else:
-        group = "lane" if key.startswith("LaneCenter") else "long" if long_key else "slc"
+        group = ("lane" if key.startswith("LaneCenter") or key in BLENDFUL_LIVE_KEYS else
+                 "long" if long_key else "slc")
     else:
       return False
     try:
@@ -1639,6 +1652,8 @@ class FeatureSettingsOwner:
         from openpilot.starpilot.lateral.lane_runtime import runtime_supported
         if not runtime_supported(self.vehicle_params()):
           return False
+      if key in BLENDFUL_LIVE_KEYS and not self._blendful_catalog_available():
+        return False
       if ((request.vehicle_fingerprint is not None if key in ("ShowSpeedLimits", "AlwaysAllowUploads") else
            self.vehicle_fingerprint() != request.vehicle_fingerprint) or
           not self.authority(group) or self._raw(source_key) != request.expected or
@@ -1711,6 +1726,10 @@ class FeatureSettingsOwner:
         return result.committed and result.verified
       if source_key in BOOL_DEFAULTS:
         self.params.put_bool(source_key, encoded == "1", block=True)
+        if source_key == "LaneCentering" and encoded == "1":
+          self.params.put_bool("Blendful", False, block=True)
+        elif source_key == "Blendful" and encoded == "1":
+          self.params.put_bool("LaneCentering", False, block=True)
       elif source_key == AOL_THRESHOLD:
         self.params.put(source_key, encoded, block=True)
       elif source_key in AOL_BUTTONS:
