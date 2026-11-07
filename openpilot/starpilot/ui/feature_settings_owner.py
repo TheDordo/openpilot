@@ -87,7 +87,7 @@ BOOL_DEFAULTS = {
   "SpeedLimitController": False, "ShowSpeedLimits": True,
   "SLCConfirmation": False,
   "PauseLateralOnSignal": False,
-  "LaneCentering": False, "LaneCenteringPauseOnSignal": True,
+  "LaneCentering": False, "LaneCenteringPauseOnSignal": True, "Blendful": False,
   "CustomPersonalities": False, PLANNER_SELECTION_KEY: True,
   BOSCH_A_STOCK_BRAKE_FEEL_KEY: False, BOSCH_A_HUMAN_FOLLOWING_KEY: False,
   LEAD_APPROACH_KEY: False,
@@ -123,7 +123,7 @@ AOL_THRESHOLD = "AolBrakePauseSpeedMps"
 AOL_LEGACY_THRESHOLD = "PauseAOLOnBrake"
 TORQUE_NUMBERS = LEGACY_KEYS
 LANE_LIVE_KEYS = frozenset(("LaneCentering", "LaneCenteringPauseOnSignal", "LaneCenterOffset",
-                            "LaneCenteringE2EAuthority", "LaneCenteringStrength"))
+                            "LaneCenteringE2EAuthority", "LaneCenteringStrength", "Blendful"))
 CURVE_KEYS = frozenset((CURVE_MASTER_KEY, CURVE_NO_LEAD_KEY))
 CURVE_PAGE_KEYS = CURVE_KEYS | {"ShowCSCStatus"}
 CRUISE_KEYS = frozenset(("CustomCruise", "CustomCruiseLong"))
@@ -197,6 +197,15 @@ class FeatureSettingsOwner:
       if configured is not None:
         return configured
     return aol_policy_for(cp)
+
+  def _blendful_catalog_available(self) -> bool:
+    try:
+      from openpilot.starpilot.models.catalog import DEFAULT_SMALL
+      from openpilot.starpilot.models.manager import preferences
+      prefs = preferences()
+      return bool(prefs.get("small") != DEFAULT_SMALL or prefs.get("big"))
+    except (ImportError, OSError, TypeError, ValueError):
+      return False
 
   def _alpha_long_capability(self):
     cp = self.vehicle_params()
@@ -1131,6 +1140,12 @@ class FeatureSettingsOwner:
                           minimum=33, maximum=round(STRENGTH_MAX / STRENGTH_BASELINE * 100), step=1 if strength_row.step > 0 else 0,
                           reason="100% is normal; lower values reduce centering and higher values strengthen it" if strength_supported else
                           "Not available with this vehicle configuration"))
+      blendful_allowed = self._blendful_catalog_available()
+      blendful_row = self._bool_row("Blendful", "Blendful (alpha)", allowed and blendful_allowed)
+      rows.append(replace(blendful_row,
+                          reason=("Adds a gentle nudge toward lane center on top of the model's steering, "
+                                  "stronger when lane lines are clear.")
+                          if blendful_allowed else "Select a non-default Small or Big model to use Blendful."))
     elif page == FeaturePage.LANE_CHANGE:
       title = "Lane Changes"
       rows.extend(self.lane_changes.rows(parked))
