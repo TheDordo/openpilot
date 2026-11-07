@@ -9,7 +9,7 @@ import numpy as np
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.starpilot.models.blendful import Blendful
+from openpilot.starpilot.models.blendful import Blendful, blendful_inputs_ready
 
 X = np.array(ModelConstants.X_IDXS)
 BUILD, RELEASE = 0.5, 2.0
@@ -96,6 +96,10 @@ class TestBlendful(OpenpilotTestCase):
       self.bf.update(frame(center=0.3, plan=-0.02 * i, probs=(p, p)), 20.0, True, 0.0)
       if self.bf.trust < trust:
         assert abs(self.bf.dk) <= abs(dk) + 1e-12
+
+  def test_missing_outputs_are_laneless(self):
+    assert not blendful_inputs_ready({})
+    assert self.bf.update({}, 20.0, True, 0.0) == 0.0
 
   def test_toggle_off_returns_zero_and_resets(self):
     drive(self.bf, 5.0, center=0.5)

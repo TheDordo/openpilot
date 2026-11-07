@@ -51,6 +51,13 @@ class ModeldProcess(PythonProcess):
     device_fresh = (sm.seen['deviceState'] and sm.valid['deviceState'] and sm.alive['deviceState'] and
                     0 < int(sm.logMonoTime['deviceState']) <= now <= int(sm.logMonoTime['deviceState']) + 1_000_000_000)
     self.context_ready = bool(device_fresh and started)
+    if (self.context_ready and started and self.proc is not None and not alive and not self.shutting_down and
+        self.recovery.phase == 'monitor' and self.proc.exitcode not in (None, STARTUP_FALLBACK_EXIT)):
+      exitcode = self.proc.exitcode
+      self.proc.join(timeout=0)
+      self.proc = None
+      cloudlog.event('modeld.recovery', action='unexpected-exit', exitcode=exitcode, pid=pid, drive=evidence.drive_id)
+      return
     if (self.context_ready and self.proc is not None and not alive and not self.shutting_down and
         self.proc.exitcode == STARTUP_FALLBACK_EXIT and self.recovery.phase == 'monitor' and
         not self.recovery.small_only and 0 < self.launch_drive_id == evidence.drive_id):

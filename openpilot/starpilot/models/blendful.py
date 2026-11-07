@@ -19,6 +19,22 @@ LINE_STD = (0.2, 0.6)
 POINT_STD = 0.1
 YIELD = (0.2, 0.45)
 X_IDXS = np.array(ModelConstants.X_IDXS)
+BLENDFUL_INPUTS = frozenset(("lane_lines", "lane_lines_stds", "lane_lines_prob", "plan"))
+
+
+def blendful_inputs_ready(model_output: dict) -> bool:
+  if not BLENDFUL_INPUTS <= model_output.keys():
+    return False
+  try:
+    lines = model_output["lane_lines"]
+    stds = model_output["lane_lines_stds"]
+    probs = model_output["lane_lines_prob"]
+    plan = model_output["plan"]
+  except (KeyError, TypeError):
+    return False
+  if lines.ndim < 4 or stds.ndim < 4 or probs.ndim < 2 or plan.ndim < 3:
+    return False
+  return lines.shape[0] > 0 and stds.shape[0] > 0 and probs.shape[0] > 0 and plan.shape[0] > 0
 
 
 class Blendful:
@@ -45,6 +61,8 @@ class Blendful:
     if not enabled:
       if self.curvature or self.trust:
         self.__init__()
+      return 0.0
+    if not blendful_inputs_ready(model_output):
       return 0.0
     fading = not active or v_ego < MIN_SPEED
     if fading:

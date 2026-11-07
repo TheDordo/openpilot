@@ -112,3 +112,18 @@ class TestRecoveryProcess(unittest.TestCase):
       launch.assert_called_once_with('module', 'modeld')
       modeld_launcher('module', 'modeld', False)
       self.assertNotIn(SMALL_ONLY_ENV, environment)
+
+  def test_unexpected_exit_clears_proc_for_restart(self):
+    owner = ModeldProcess('modeld', 'module', lambda *args: True)
+    child = Mock(pid=123, exitcode=1)
+    child.is_alive.return_value = False
+    owner.proc = child
+    with patch('openpilot.starpilot.models.recovery_process.time.monotonic_ns', return_value=BASE + 2_000_000_000), \
+         patch('openpilot.starpilot.models.recovery_process.process_start_ticks', return_value=0), \
+         patch('openpilot.starpilot.models.recovery_process.read_receipt', return_value=None), \
+         patch('openpilot.starpilot.models.recovery_process.Process') as spawn:
+      owner.observe(Feed(2.), True)
+      child.join.assert_called_once_with(timeout=0)
+      self.assertIsNone(owner.proc)
+      owner.start()
+      spawn.assert_called_once()

@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, cast
 import base64
 import ctypes
 import gc
-from functools import cached_property, partial
+from functools import cached_property
 import os
 os.environ['GMMU'] = '0' # for chestnut fast loading, noop for qcom
 os.environ.setdefault('AM_POWER_LIMIT', '100')
@@ -51,7 +51,6 @@ from openpilot.starpilot.models.status import ModelVariant
 from openpilot.starpilot.models.startup import report_load_timeout, wait_for_chestnut_power
 from openpilot.starpilot.models.recovery import STARTUP_FALLBACK_EXIT
 from openpilot.starpilot.navigation.intent import TurnIntent, matching_turn_signal
-from openpilot.starpilot.models.blendful import Blendful
 from openpilot.starpilot.models.catalog import BUNDLED_CURRENT, BY_ID, DEFAULT_SMALL, DEFAULT_SMALL_SHA256
 from openpilot.starpilot.models.runner import CatalogModelState, load_verified_model
 from openpilot.starpilot.models import jetlink_adapter
@@ -494,8 +493,9 @@ def main(demo=False):
   navigation_turn = TurnIntent(params, CP)
   lane_status_session = uuid.uuid4().hex
   lane_status_sequence = 0
+  from openpilot.starpilot.models.blendful import Blendful, blendful_inputs_ready
   blendful = Blendful()
-  blendful_enabled = False
+  blendful_enabled = params.get_bool("Blendful")
 
   while True:
     # Keep receiving frames until we are at least 1 frame ahead of previous extra frame
@@ -634,9 +634,12 @@ def main(demo=False):
       drivingdata_send = messaging.new_message('drivingModelData')
       posenet_send = messaging.new_message('cameraOdometry')
 
-      blendful_active = desire == log.Desire.none and DH.lane_change_state == log.LaneChangeState.off
-      blendful_cb = (partial(blendful.update, model_output, v_ego, blendful_active, enabled=blendful_enabled)
-                     if blendful_enabled else None)
+      blendful_cb = None
+      if blendful_enabled and blendful_inputs_ready(model_output):
+        blendful_active = desire == log.Desire.none and DH.lane_change_state == log.LaneChangeState.off
+        def _apply_blendful(model_curvature: float) -> float:
+          return blendful.update(model_output, v_ego, blendful_active, model_curvature, enabled=True)
+        blendful_cb = _apply_blendful
       action = model.get_action_from_model(model_output, prev_action, lat_action_t, long_action_t, v_ego, blendful=blendful_cb)
       filter_action(action, prev_action, v_ego, subaru_tau)
       prev_action = action
