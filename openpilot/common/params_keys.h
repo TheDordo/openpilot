@@ -111,6 +111,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneCenterOffset", {PERSISTENT, FLOAT, "0.0"}},
     {"LaneCenteringE2EAuthority", {PERSISTENT, FLOAT, "1.0"}},
     {"LaneCenteringStrength", {PERSISTENT, FLOAT, "1.5"}},
+    {"Blendful", {PERSISTENT, BOOL, "0"}},
     {"AndroidAutoEnabled", {PERSISTENT | DONT_LOG, BOOL, "0"}},
     {"AdvancedLateralTune", {PERSISTENT, BOOL}},
     {"LateralControllerSelection", {PERSISTENT | DONT_LOG, JSON}},
